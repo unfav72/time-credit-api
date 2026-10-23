@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Offline — TimeCredit Live</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    }
+    body {
+      background-color: #f1f5f9;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    .clay-card {
+      background: #f8fafc;
+      border-radius: 28px;
+      padding: 2.5rem;
+      max-width: 480px;
+      text-align: center;
+      box-shadow: 12px 12px 24px rgba(166, 180, 200, 0.45), 
+                  -12px -12px 24px rgba(255, 255, 255, 0.95), 
+                  inset 2px 2px 4px rgba(255, 255, 255, 0.8), 
+                  inset -2px -2px 4px rgba(166, 180, 200, 0.2);
+    }
+    .icon-badge {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 1.5rem;
+      border-radius: 24px;
+      background: #ede9fe;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: inset 4px 4px 8px rgba(180, 175, 220, 0.4), inset -4px -4px 8px rgba(255, 255, 255, 0.9);
+      font-size: 2.2rem;
+    }
+    h1 {
+      font-size: 1.6rem;
+      margin-bottom: 0.75rem;
+      color: #1e1b4b;
+    }
+    p {
+      color: #475569;
+      line-height: 1.6;
+      margin-bottom: 1.75rem;
+      font-size: 0.95rem;
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.85rem 1.8rem;
+      border-radius: 18px;
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: white;
+      text-decoration: none;
+      font-weight: 600;
+      box-shadow: 6px 6px 14px rgba(99, 102, 241, 0.35), -4px -4px 10px rgba(255, 255, 255, 0.8);
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn:active {
+      transform: scale(0.98);
+      box-shadow: inset 2px 2px 6px rgba(0, 0, 0, 0.2);
+    }
+  </style>
+</head>
+<body>
+  <div class="clay-card">
+    <div class="icon-badge">📡</div>
+    <h1>You're Currently Offline</h1>
+    <p>TimeCredit Live is designed with offline resilience for cached resources. Real-time SQL Query Lab execution, live video classroom sessions, and ledger transfers require an active network connection.</p>
+    <button class="btn" onclick="window.location.reload()">Check Connection & Retry</button>
+  </div>
+</body>
+</html>

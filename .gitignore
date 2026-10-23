@@ -1,9 +1,22 @@
+# Dependencies
 node_modules/
+frontend/node_modules/
+vendor/
+backend/vendor/
+
+# Environment & Secret files (Keep credentials private!)
 .env
-.DS_Store
+.env.local
+backend/.env
+frontend/.env
+frontend/.env.local
+
+# Production Build artifacts
 dist/
+frontend/dist/
 *.log
+
+# Editor & OS files
+.DS_Store
 .vscode/
 .idea/
-vendor/
-frontend/
