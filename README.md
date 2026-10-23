@@ -36,53 +36,27 @@ The official 3D clay app icon is located at:
 ### 2. TimeCredit Wallet & Double-Entry Accounting
 - **Core Rule**: **One eligible hour of teaching earns 1.00 TimeCredit** (a 30-minute verified session earns 0.50 TimeCredits).
 - **Relational Ledger Integrity**:
-  - Stored using `DECIMAL(10, 2)` precision (never floating-point).
+  - Stored using `DECIMAL(10, 2)` / `NUMERIC(10, 2)` precision (never floating-point).
   - Append-only double-entry ledger (`credit_transactions` and `credit_ledger_entries`).
   - Strict balancing: every session settlement creates balanced `DEBIT` (learner) and `CREDIT` (teacher) entries.
   - Database row locking (`SELECT ... FOR UPDATE`) to eliminate concurrent double-spending or race conditions.
   - Unique idempotency keys to guarantee sessions cannot be settled more than once.
 
-### 3. Live Video Classroom (Jitsi Meet Integration)
-- Integrated real-time video conferencing using Jitsi Meet.
-- Camera and microphone controls, screen sharing, and meeting chat.
+### 3. Live Video Classroom (WebRTC & Jitsi Meet Integration)
+- Integrated real-time video conferencing with camera/mic controls, screen sharing, and chat.
 - Live elapsed session timer with real-time credit accrual display.
 - One-click **End & Settle Session** action triggering double-entry credit transfer and celebratory confetti.
-- Dual-mode support: Real Jitsi Meet iframe streaming or high-fidelity Claymorphic interactive classroom.
 
-### 4. Normalized MySQL 8+ Schema (3NF/BCNF)
-- 17 structured tables with primary keys, foreign key constraints, `ON DELETE CASCADE / RESTRICT`, unique keys, and indexes:
-  - `users`
-  - `skill_categories`
-  - `skills`
-  - `user_skills` (Many-to-Many bridge)
-  - `service_offers`
-  - `service_requests`
-  - `sessions`
-  - `session_participants`
-  - `credit_accounts`
-  - `credit_transactions`
-  - `credit_ledger_entries`
-  - `reviews`
-  - `notifications`
-  - `chat_messages`
-  - `saved_queries`
-  - `query_history`
-  - `audit_logs`
-- **Views**:
-  - `v_popular_skills`
-  - `v_teacher_leaderboard`
-  - `v_active_sessions`
-  - `v_user_credit_summary`
-- **Stored Procedures**:
-  - `sp_settle_session_credits`: Atomic session completion and credit transfer with rollback exception handler.
-- **Triggers**:
-  - `trg_after_user_insert`: Automatically creates credit account with 2.00 signup welcome credits.
+### 4. Razorpay TimeCredit Top-Up Gateway
+- 3 fixed server-controlled packages:
+  - **Starter**: 10 Credits = ₹27 (150 min)
+  - **Standard**: 20 Credits = ₹52 (300 min - Most Popular)
+  - **Premium**: 30 Credits = ₹75 (450 min)
+- HMAC SHA256 cryptographic verification & asynchronous webhook fulfillment.
 
-### 5. Progressive Web App (PWA)
-- Web App Manifest (`manifest.webmanifest`) configured with standalone display mode.
-- Service Worker (`sw.js`) caching application shell and static assets for offline navigation.
-- Dedicated Claymorphic offline fallback page (`offline.html`).
-- Evaluator install app banner and prompt handler.
+### 5. Multi-Database Architecture (Neon PostgreSQL + MySQL 8+)
+- 19 structured relational tables with primary keys, foreign keys, cascades, indexes, triggers, and views.
+- Fully compatible with **Neon Serverless PostgreSQL** and standard MySQL 8+.
 
 ---
 
@@ -90,100 +64,26 @@ The official 3D clay app icon is located at:
 
 ```text
 DBMS/
-├── frontend/
-│   ├── public/
-│   │   ├── manifest.webmanifest      # PWA Web App Manifest
-│   │   ├── sw.js                     # PWA Service Worker caching
-│   │   ├── offline.html              # Claymorphic offline fallback
-│   │   ├── logo.png                  # 3D Claymorphism App Icon
-│   │   └── icons/
-│   │       ├── icon-192.png
-│   │       └── icon-512.png
+├── frontend/                         # React 19 + TypeScript + Vite PWA
+│   ├── public/                       # Manifest, Service Worker, 3D Clay icons
 │   ├── src/
-│   │   ├── components/clay/          # Reusable Claymorphism UI Library
-│   │   │   ├── ClayCard.tsx
-│   │   │   ├── ClayButton.tsx
-│   │   │   ├── ClayInput.tsx
-│   │   │   ├── ClayBadge.tsx
-│   │   │   ├── ClayStatCard.tsx
-│   │   │   ├── ClayModal.tsx
-│   │   │   ├── ClayNavbar.tsx
-│   │   │   └── ClaySidebar.tsx
-│   │   ├── pages/                    # 13 Application Pages
-│   │   │   ├── LandingPage.tsx
-│   │   │   ├── DashboardPage.tsx
-│   │   │   ├── SqlQueryLabPage.tsx   # Flagship DBMS SQL Editor
-│   │   │   ├── LiveClassroomPage.tsx # Jitsi Meet & Session Timer
-│   │   │   ├── WalletPage.tsx        # Double-entry ledger
-│   │   │   ├── DatabaseExplorerPage.tsx # ERD & Table Inspector
-│   │   │   ├── SkillsPage.tsx
-│   │   │   ├── BrowseServicesPage.tsx
-│   │   │   ├── ServiceRequestsPage.tsx
-│   │   │   ├── SessionsPage.tsx
-│   │   │   ├── ReportsPage.tsx
-│   │   │   ├── ProfilePage.tsx
-│   │   │   ├── NotificationsPage.tsx
-│   │   │   └── SettingsPage.tsx
-│   │   ├── services/
-│   │   │   ├── api.ts                # Unified API client
-│   │   │   └── dbEngine.ts           # WebAssembly real SQL engine
-│   │   ├── types/
-│   │   │   └── index.ts              # TypeScript domain types
-│   │   ├── index.css                 # Claymorphism Design System CSS
-│   │   ├── App.tsx                   # Master router & state
-│   │   └── main.tsx
-│   └── package.json
-├── backend/
-│   ├── config/
-│   │   └── database.php              # PDO configurations
-│   ├── database/
-│   │   ├── schema.sql                # Production MySQL 8+ Schema
-│   │   ├── practice-schema.sql       # Controlled practice sandbox
+│   │   ├── components/clay/          # Reusable Claymorphism UI component library
+│   │   ├── pages/                    # 13 Application Pages (Dashboard, LiveClassroom, Wallet, etc.)
+│   │   ├── services/                 # Unified API client & WebAssembly DB Engine
+│   │   └── types/                    # Strict TypeScript interfaces
+│   └── vercel.json                   # Vercel deployment configuration
+├── backend/                          # PHP 8.3 REST API
+│   ├── config/database.php           # Auto-switching PostgreSQL / MySQL PDO
+│   ├── database/                     # PostgreSQL & MySQL schemas and seeders
+│   │   ├── postgres-full-setup.sql   # 1-Click Neon SQL Editor setup
+│   │   ├── postgres-schema.sql
+│   │   ├── schema.sql
 │   │   └── seeders/
-│   │       └── seed.sql              # Rich seed data
-│   ├── src/
-│   │   ├── controllers/
-│   │   │   ├── AuthController.php    # Bcrypt hashing & sessions
-│   │   │   ├── SkillController.php
-│   │   │   ├── RequestController.php
-│   │   │   ├── SessionController.php # Atomic credit settlement
-│   │   │   ├── WalletController.php
-│   │   │   ├── SqlLabController.php  # Dedicated SQL execution API
-│   │   │   └── ReportController.php
-│   │   ├── middleware/
-│   │   │   └── AuthMiddleware.php
-│   │   └── repositories/
-│   │       └── Database.php
-│   ├── public/
-│   │   └── index.php                 # REST API Front Controller
-│   └── .env.example
-├── tests/
-│   └── DatabaseTest.php              # Ledger & rule verification
+│   ├── src/controllers/              # API Controllers (Auth, Sessions, Wallet, Razorpay)
+│   ├── public/index.php              # Front Controller
+│   └── Dockerfile                    # Container configuration for Render / Railway
+├── tests/                            # Automated test runner (18/18 test cases)
 └── README.md
-```
-
----
-
-## 🚀 How to Run Locally
-
-### 1. Run the Frontend (React + Vite + TypeScript)
-```bash
-cd frontend
-npm install
-npm run dev
-```
-Open **http://localhost:5173** in your browser.
-
-> **Note for Evaluators:** The frontend features an **embedded WebAssembly SQL engine (`sql.js`)** that parses and executes real relational SQL statements directly in your browser. All 13 pages, live classroom features, and SQL Query Lab operations work immediately out-of-the-box!
-
-### 2. Run the PHP & MySQL Backend (Optional / Production)
-1. Import `backend/database/schema.sql` and `backend/database/seeders/seed.sql` into MySQL 8+ (`timecredit_db`).
-2. Import `backend/database/practice-schema.sql` into MySQL 8+ (`timecredit_practice`).
-3. Copy `backend/.env.example` to `backend/.env` and update MySQL credentials.
-4. Start the PHP server:
-```bash
-cd backend
-php -S 127.0.0.1:8000 -t public
 ```
 
 ---
@@ -198,6 +98,41 @@ php -S 127.0.0.1:8000 -t public
 | **Sara Kim** | `sara.kim@timecredit.live` | Member | 6.00 TC | Claymorphism 3D UI |
 
 *Password for all test accounts is `password123`.*
-#   t i m e - c r e d i t - a p i  
- #   D B M S - A P I  
- 
+
+---
+
+## 🚀 100% Free Cloud Deployment Guide
+
+### 1. Database on Neon (Serverless PostgreSQL)
+1. Go to [Neon.tech](https://neon.tech) and create a free project named `timecredit-db`.
+2. Open the **SQL Editor** tab in Neon.
+3. Paste the contents of `backend/database/postgres-full-setup.sql` (or `postgres-full-setup.sql` at root) and click **Run**.
+4. Copy your pooled connection string:
+   ```text
+   postgresql://neondb_owner:PASSWORD@ep-xyz.us-east-2.aws.neon.tech/neondb?sslmode=require
+   ```
+
+### 2. Backend on Render (Free Docker Web Service)
+1. Go to [Render.com](https://render.com) and create a **New Web Service** connected to `https://github.com/unfav72/time-credit-api`.
+2. Configure:
+   - **Environment:** Docker
+   - **Docker Command / Context:** `backend`
+   - **Dockerfile Path:** `backend/Dockerfile`
+   - **Plan:** Free
+3. Add Environment Variables:
+   - `DATABASE_URL` = *(Your Neon PostgreSQL connection string)*
+   - `SESSION_SECRET` = *(Any 32-character random string)*
+   - `RAZORPAY_KEY_ID` = `rzp_test_TrFi6LyCzcSU8k`
+   - `RAZORPAY_KEY_SECRET` = `WduRtA2i4mvCeNt4DfobW8cC`
+   - `RAZORPAY_WEBHOOK_SECRET` = `whsec_TimeCreditLive2026_test`
+   - `FRONTEND_URL` = `https://your-frontend.vercel.app`
+4. Click **Deploy Web Service**. You will receive an API URL: `https://time-credit-api-xxxx.onrender.com`.
+
+### 3. Frontend on Vercel (Free PWA Hosting)
+1. Go to [Vercel.com](https://vercel.com) and import `https://github.com/unfav72/time-credit-api`.
+2. In Project Settings:
+   - **Framework Preset:** Vite
+   - **Root Directory:** Click Edit and select `frontend`
+3. Add Environment Variable:
+   - `VITE_API_URL` = `https://time-credit-api-xxxx.onrender.com/api/v1`
+4. Click **Deploy**. Your frontend is live with automatic SSL, caching, and PWA support!
