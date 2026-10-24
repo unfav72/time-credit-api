@@ -110,7 +110,6 @@ class Database {
                 $err = $stmt->errorInfo();
                 throw new RuntimeException("PostgreSQL RETURNING id fetchColumn error: " . ($err[2] ?? 'No ID returned'));
             }
-            $stmt->closeCursor();
             return (int)$id;
         }
 
