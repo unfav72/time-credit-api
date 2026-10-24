@@ -233,6 +233,41 @@ try {
             }
         }
 
+        // Test user insert
+        $insertTest = [];
+        try {
+            $pdo->beginTransaction();
+            $testEmail = 'debug_' . time() . '@test.com';
+            $tStmt = $pdo->prepare("
+                INSERT INTO users (full_name, email, password_hash, role, status, bio)
+                VALUES ('Debug Test', :email, 'dummyhash', 'member', 'active', 'Debug bio')
+                RETURNING id
+            ");
+            $tStmt->execute(['email' => $testEmail]);
+            $insertedId = $tStmt->fetchColumn();
+
+            // Check if transaction is still healthy
+            $tAcc = $pdo->prepare("SELECT id, balance FROM credit_accounts WHERE user_id = :uid");
+            $tAcc->execute(['uid' => $insertedId]);
+            $accData = $tAcc->fetch();
+
+            $pdo->rollBack();
+            $insertTest = [
+                'result' => 'SUCCESS',
+                'inserted_user_id' => $insertedId,
+                'wallet_created_by_trigger' => $accData ? true : false,
+                'wallet_data' => $accData
+            ];
+        } catch (\Throwable $itErr) {
+            try { if ($pdo->inTransaction()) $pdo->rollBack(); } catch (\Throwable $rb) {}
+            $insertTest = [
+                'result' => 'FAILED',
+                'error' => $itErr->getMessage(),
+                'code' => $itErr->getCode(),
+                'file' => basename($itErr->getFile()) . ':' . $itErr->getLine()
+            ];
+        }
+
         AuthMiddleware::jsonResponse([
             'status' => empty($errors) ? 'success' : 'partial',
             'driver' => $driver,
@@ -240,7 +275,8 @@ try {
             'migration_errors' => $errors,
             'sequences' => $seqReport,
             'table_counts' => $counts,
-            'triggers_on_users' => $triggers
+            'triggers_on_users' => $triggers,
+            'insert_test' => $insertTest
         ]);
         exit;
     }
