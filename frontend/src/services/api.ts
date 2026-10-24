@@ -14,7 +14,9 @@ import type {
   MeetingConfig
 } from '../types';
 
-export const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000';
+const rawBaseUrl = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000';
+// Strip trailing /api and slashes so concatenation with /api/v1 endpoints is always canonical
+export const API_BASE_URL = rawBaseUrl.replace(/\/api\/?$/, '').replace(/\/+$/, '');
 
 export const TOPUP_PACKAGES: TopUpPackage[] = [
   {

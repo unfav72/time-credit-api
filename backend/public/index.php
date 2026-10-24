@@ -87,8 +87,15 @@ use TimeCredit\Controllers\WhiteboardController;
 use TimeCredit\Middleware\AuthMiddleware;
 use TimeCredit\Repositories\Database;
 
-// Extract URI path
-$requestUri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+// Extract and normalize URI path
+$rawPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '/';
+// Collapse duplicate /api prefixes (e.g. /api/api/v1/... -> /api/v1/...)
+$cleanPath = preg_replace('#^(/api)+#', '/api', $rawPath);
+// Normalize non-versioned /api/ routes to /api/v1/ (except /api/health)
+if ($cleanPath !== '/api/health' && str_starts_with($cleanPath, '/api/') && !str_starts_with($cleanPath, '/api/v1/')) {
+    $cleanPath = preg_replace('#^/api/#', '/api/v1/', $cleanPath);
+}
+$requestUri = $cleanPath;
 $method = $_SERVER['REQUEST_METHOD'];
 
 // Health check endpoint with database connectivity check
