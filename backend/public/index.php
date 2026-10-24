@@ -75,6 +75,7 @@ spl_autoload_register(function ($class) {
 });
 
 use TimeCredit\Controllers\AuthController;
+use TimeCredit\Controllers\ChatController;
 use TimeCredit\Controllers\SkillController;
 use TimeCredit\Controllers\RequestController;
 use TimeCredit\Controllers\SessionController;

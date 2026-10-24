@@ -573,3 +573,74 @@ BEGIN
     p_transferred_credits := v_calculated_credits;
 END;
 $$;
+
+-- ----------------------------------------------------------------------------
+-- 20. SESSION SIGNALS (WebRTC P2P Live Streaming)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS session_signals (
+    id SERIAL PRIMARY KEY,
+    session_id INT NOT NULL,
+    sender_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    signal_type VARCHAR(50) NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_signals_session ON session_signals(session_id, id);
+
+-- ----------------------------------------------------------------------------
+-- 21. FRIENDSHIPS & SOCIAL GRAPH
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS friendships (
+    id SERIAL PRIMARY KEY,
+    user_id_1 INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id_2 INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACCEPTED', 'DECLINED', 'BLOCKED')),
+    action_user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_friendship UNIQUE (user_id_1, user_id_2)
+);
+CREATE INDEX IF NOT EXISTS idx_friendships_users ON friendships(user_id_1, user_id_2);
+
+-- ----------------------------------------------------------------------------
+-- 22. DIRECT MESSAGES
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS direct_messages (
+    id SERIAL PRIMARY KEY,
+    sender_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    receiver_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    message TEXT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dm_thread ON direct_messages(sender_id, receiver_id, id);
+
+-- SEQUENCE SYNCHRONIZATION
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'users_id_seq') THEN
+        PERFORM setval('users_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM users), 1));
+        PERFORM setval('skill_categories_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM skill_categories), 1));
+        PERFORM setval('skills_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM skills), 1));
+        PERFORM setval('user_skills_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM user_skills), 1));
+        PERFORM setval('service_offers_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM service_offers), 1));
+        PERFORM setval('service_requests_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM service_requests), 1));
+        PERFORM setval('sessions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM sessions), 1));
+        PERFORM setval('credit_accounts_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_accounts), 1));
+        PERFORM setval('credit_transactions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_transactions), 1));
+        PERFORM setval('credit_ledger_entries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_ledger_entries), 1));
+        PERFORM setval('reviews_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM reviews), 1));
+        PERFORM setval('notifications_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM notifications), 1));
+        PERFORM setval('saved_queries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM saved_queries), 1));
+        PERFORM setval('audit_logs_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM audit_logs), 1));
+        IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'session_signals_id_seq') THEN
+            PERFORM setval('session_signals_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM session_signals), 1));
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'friendships_id_seq') THEN
+            PERFORM setval('friendships_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM friendships), 1));
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'direct_messages_id_seq') THEN
+            PERFORM setval('direct_messages_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM direct_messages), 1));
+        END IF;
+    END IF;
+END $$;

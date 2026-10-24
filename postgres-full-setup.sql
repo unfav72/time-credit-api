@@ -250,6 +250,8 @@ CREATE TABLE notifications (
     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
     title VARCHAR(150) NOT NULL,
     message TEXT NOT NULL,
+    notification_type VARCHAR(50) NOT NULL DEFAULT 'SYSTEM' CHECK (notification_type IN ('SYSTEM', 'REQUEST_RECEIVED', 'REQUEST_ACCEPTED', 'REQUEST_REJECTED', 'SESSION_SCHEDULED', 'SESSION_COMPLETED', 'PAYMENT_SUCCESS', 'SECURITY')),
+    action_url VARCHAR(255) DEFAULT NULL,
     read_at TIMESTAMP DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -305,6 +307,41 @@ CREATE TABLE audit_logs (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_audit_entity ON audit_logs(entity_type, entity_id);
+
+-- 20. Session Signals (WebRTC P2P Live Streaming)
+CREATE TABLE IF NOT EXISTS session_signals (
+    id SERIAL PRIMARY KEY,
+    session_id INT NOT NULL,
+    sender_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    signal_type VARCHAR(50) NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_signals_session ON session_signals(session_id, id);
+
+-- 21. Friendships & Social Graph
+CREATE TABLE IF NOT EXISTS friendships (
+    id SERIAL PRIMARY KEY,
+    user_id_1 INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id_2 INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACCEPTED', 'DECLINED', 'BLOCKED')),
+    action_user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_friendship UNIQUE (user_id_1, user_id_2)
+);
+CREATE INDEX IF NOT EXISTS idx_friendships_users ON friendships(user_id_1, user_id_2);
+
+-- 22. Direct Messages
+CREATE TABLE IF NOT EXISTS direct_messages (
+    id SERIAL PRIMARY KEY,
+    sender_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    receiver_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    message TEXT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dm_thread ON direct_messages(sender_id, receiver_id, id);
 
 
 -- ----------------------------------------------------------------------------
@@ -683,3 +720,7 @@ SELECT setval('credit_ledger_entries_id_seq', COALESCE((SELECT MAX(id) FROM cred
 SELECT setval('reviews_id_seq', COALESCE((SELECT MAX(id) FROM reviews), 1));
 SELECT setval('notifications_id_seq', COALESCE((SELECT MAX(id) FROM notifications), 1));
 SELECT setval('saved_queries_id_seq', COALESCE((SELECT MAX(id) FROM saved_queries), 1));
+SELECT setval('audit_logs_id_seq', COALESCE((SELECT MAX(id) FROM audit_logs), 1));
+SELECT setval('session_signals_id_seq', COALESCE((SELECT MAX(id) FROM session_signals), 1));
+SELECT setval('friendships_id_seq', COALESCE((SELECT MAX(id) FROM friendships), 1));
+SELECT setval('direct_messages_id_seq', COALESCE((SELECT MAX(id) FROM direct_messages), 1));

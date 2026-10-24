@@ -373,33 +373,74 @@ class ChatController {
     public static function searchUsers(): void {
         $user = AuthMiddleware::requireAuth();
         $pdo = Database::getCoreConnection();
+        self::ensureSchema($pdo);
         $myId = (int)$user['id'];
         $query = trim($_GET['q'] ?? '');
 
-        if (empty($query)) {
-            $stmt = $pdo->prepare("
-                SELECT id, full_name, email, bio, role 
-                FROM users 
-                WHERE id != :my_id 
-                ORDER BY id ASC 
-                LIMIT 20
-            ");
-            $stmt->execute(['my_id' => $myId]);
-        } else {
-            $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
-            $likeOp = ($driver === 'pgsql') ? 'ILIKE' : 'LIKE';
-            $stmt = $pdo->prepare("
-                SELECT id, full_name, email, bio, role 
-                FROM users 
-                WHERE id != :my_id 
-                  AND (full_name {$likeOp} :q OR email {$likeOp} :q OR bio {$likeOp} :q)
-                ORDER BY full_name ASC 
-                LIMIT 20
-            ");
-            $stmt->execute(['my_id' => $myId, 'q' => "%{$query}%"]);
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $likeOp = ($driver === 'pgsql') ? 'ILIKE' : 'LIKE';
+        $whereSql = "u.id != :my_id";
+        $params = [
+            'my_id' => $myId,
+            'uid1' => $myId, 'uid2' => $myId,
+            'uid3' => $myId, 'uid4' => $myId,
+            'uid5' => $myId, 'uid6' => $myId,
+            'my_id_action' => $myId
+        ];
+
+        if (!empty($query)) {
+            $words = preg_split('/\s+/', $query);
+            $wordClauses = [];
+            foreach ($words as $idx => $w) {
+                if (empty($w)) continue;
+                $pName = "qw_{$idx}";
+                $wordClauses[] = "(u.full_name {$likeOp} :{$pName} OR u.email {$likeOp} :{$pName} OR COALESCE(u.bio, '') {$likeOp} :{$pName})";
+                $params[$pName] = "%{$w}%";
+            }
+            if (!empty($wordClauses)) {
+                $whereSql .= " AND (" . implode(" AND ", $wordClauses) . ")";
+            }
         }
 
-        AuthMiddleware::jsonResponse(['users' => $stmt->fetchAll()]);
+        $stmt = $pdo->prepare("
+            SELECT u.id, u.full_name, u.email, u.bio, u.role,
+                   EXISTS(
+                       SELECT 1 FROM friendships f 
+                       WHERE ((f.user_id_1 = :uid1 AND f.user_id_2 = u.id) OR (f.user_id_1 = u.id AND f.user_id_2 = :uid2))
+                         AND f.status = 'ACCEPTED'
+                   ) AS is_friend,
+                   (
+                       SELECT f.status FROM friendships f 
+                       WHERE ((f.user_id_1 = :uid3 AND f.user_id_2 = u.id) OR (f.user_id_1 = u.id AND f.user_id_2 = :uid4))
+                       LIMIT 1
+                   ) AS friendship_status,
+                   EXISTS(
+                       SELECT 1 FROM friendships f 
+                       WHERE ((f.user_id_1 = :uid5 AND f.user_id_2 = u.id) OR (f.user_id_1 = u.id AND f.user_id_2 = :uid6))
+                         AND f.status = 'PENDING' AND f.action_user_id = :my_id_action
+                   ) AS is_pending_sent
+            FROM users u
+            WHERE {$whereSql}
+            ORDER BY is_friend DESC, u.full_name ASC 
+            LIMIT 40
+        ");
+        $stmt->execute($params);
+
+        $rawUsers = $stmt->fetchAll();
+        $users = array_map(function($u) {
+            return [
+                'id' => (int)$u['id'],
+                'full_name' => $u['full_name'],
+                'email' => $u['email'],
+                'bio' => $u['bio'] ?? '',
+                'role' => $u['role'] ?? 'member',
+                'is_friend' => !empty($u['is_friend']) && $u['is_friend'] !== '0' && $u['is_friend'] !== false,
+                'friendship_status' => $u['friendship_status'] ?? null,
+                'is_pending_sent' => !empty($u['is_pending_sent']) && $u['is_pending_sent'] !== '0' && $u['is_pending_sent'] !== false,
+            ];
+        }, $rawUsers);
+
+        AuthMiddleware::jsonResponse(['users' => $users]);
     }
 
     // =========================================================================

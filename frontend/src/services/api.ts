@@ -663,9 +663,29 @@ class ApiClient {
     return this.request(`/api/v1/friends/${friendshipId}/decline`, { method: 'POST' });
   }
 
-  async searchUsersDirectory(query = ''): Promise<Array<{ id: number; full_name: string; email: string; bio?: string; role: string }>> {
+  async searchUsersDirectory(query = ''): Promise<Array<{
+    id: number;
+    full_name: string;
+    email: string;
+    bio?: string;
+    role: string;
+    is_friend?: boolean;
+    friendship_status?: string | null;
+    is_pending_sent?: boolean;
+  }>> {
     const q = encodeURIComponent(query);
-    const res = await this.request<{ users: Array<{ id: number; full_name: string; email: string; bio?: string; role: string }> }>(
+    const res = await this.request<{
+      users: Array<{
+        id: number;
+        full_name: string;
+        email: string;
+        bio?: string;
+        role: string;
+        is_friend?: boolean;
+        friendship_status?: string | null;
+        is_pending_sent?: boolean;
+      }>
+    }>(
       `/api/v1/users/directory?q=${q}`,
       { method: 'GET' }
     );
