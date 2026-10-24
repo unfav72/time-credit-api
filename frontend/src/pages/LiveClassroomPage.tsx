@@ -47,6 +47,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
 
   // Settlement modal states
   const [settleModalOpen, setSettleModalOpen] = useState(false);
@@ -69,12 +70,35 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     initializeMedia();
 
     return () => {
-      // Clean up media streams when leaving page
+      // Clean up all media streams when leaving page
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach(track => track.stop());
+        screenStreamRef.current = null;
       }
     };
   }, []);
+
+  // Ensure screen sharing video element is attached when screenSharing changes
+  useEffect(() => {
+    if (screenSharing && screenVideoRef.current && screenStreamRef.current) {
+      screenVideoRef.current.srcObject = screenStreamRef.current;
+      screenVideoRef.current.play().catch(e => console.warn('Screen video play error:', e));
+    }
+  }, [screenSharing]);
+
+  // Ensure local camera video element is attached when camera state changes
+  useEffect(() => {
+    if (cameraActive && localVideoRef.current && streamRef.current) {
+      if (localVideoRef.current.srcObject !== streamRef.current) {
+        localVideoRef.current.srcObject = streamRef.current;
+      }
+      localVideoRef.current.play().catch(e => console.warn('Local video play error:', e));
+    }
+  }, [cameraActive, hasMediaStream]);
 
   useEffect(() => {
     let interval: any = null;
@@ -92,60 +116,115 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     setActiveSession(current);
   };
 
-  const initializeMedia = async () => {
+  const initializeMedia = async (forceVideo = true, forceAudio = true) => {
     try {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.warn('getUserMedia not supported in this environment');
+        setHasMediaStream(false);
+        return;
+      }
+
+      let stream: MediaStream | null = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: forceVideo,
+          audio: forceAudio
+        });
+      } catch (bothErr) {
+        console.warn('Combined audio/video request failed, trying video only:', bothErr);
+        if (forceVideo) {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
+      }
+
+      if (stream) {
         streamRef.current = stream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play().catch(e => console.warn('Local video play error:', e));
         }
         setHasMediaStream(true);
+        setCameraActive(true);
+        setMicActive(stream.getAudioTracks().length > 0);
       }
-    } catch (err) {
-      console.log('Camera/Mic permission not granted or device unavailable; running high-fidelity video canvas mode.', err);
+    } catch (err: any) {
+      console.warn('Camera/Mic permission not granted or device unavailable:', err);
       setHasMediaStream(false);
+      setCameraActive(false);
     }
   };
 
-  const toggleCamera = () => {
-    if (streamRef.current) {
-      const videoTracks = streamRef.current.getVideoTracks();
-      videoTracks.forEach(track => {
-        track.enabled = !cameraActive;
-      });
+  const toggleCamera = async () => {
+    const nextState = !cameraActive;
+    if (!streamRef.current || streamRef.current.getVideoTracks().length === 0) {
+      if (nextState) {
+        await initializeMedia(true, micActive);
+      }
+      return;
     }
-    setCameraActive(!cameraActive);
+
+    const videoTracks = streamRef.current.getVideoTracks();
+    videoTracks.forEach(track => {
+      track.enabled = nextState;
+    });
+
+    if (localVideoRef.current && streamRef.current) {
+      localVideoRef.current.srcObject = streamRef.current;
+    }
+
+    setCameraActive(nextState);
   };
 
-  const toggleMic = () => {
-    if (streamRef.current) {
-      const audioTracks = streamRef.current.getAudioTracks();
-      audioTracks.forEach(track => {
-        track.enabled = !micActive;
-      });
+  const toggleMic = async () => {
+    const nextState = !micActive;
+    if (!streamRef.current || streamRef.current.getAudioTracks().length === 0) {
+      if (nextState) {
+        await initializeMedia(cameraActive, true);
+      }
+      return;
     }
-    setMicActive(!micActive);
+
+    const audioTracks = streamRef.current.getAudioTracks();
+    audioTracks.forEach(track => {
+      track.enabled = nextState;
+    });
+    setMicActive(nextState);
+  };
+
+  const stopScreenShare = () => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(track => track.stop());
+      screenStreamRef.current = null;
+    }
+    if (screenVideoRef.current) {
+      screenVideoRef.current.srcObject = null;
+    }
+    setScreenSharing(false);
   };
 
   const toggleScreenShare = async () => {
     if (!screenSharing) {
       try {
-        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-          const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-          if (screenVideoRef.current) {
-            screenVideoRef.current.srcObject = displayStream;
-          }
-          setScreenSharing(true);
-          displayStream.getVideoTracks()[0].onended = () => {
-            setScreenSharing(false);
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          alert('Screen sharing is not supported by your browser or environment.');
+          return;
+        }
+
+        const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        screenStreamRef.current = displayStream;
+        setScreenSharing(true);
+
+        const videoTrack = displayStream.getVideoTracks()[0];
+        if (videoTrack) {
+          videoTrack.onended = () => {
+            stopScreenShare();
           };
         }
-      } catch (e) {
+      } catch (e: any) {
         console.warn('Screen share canceled or failed:', e);
       }
     } else {
-      setScreenSharing(false);
+      stopScreenShare();
     }
   };
 
@@ -305,7 +384,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             title="Accruing in real-time. 1 Hour = 1.00 TimeCredit"
           >
             <Coins size={16} />
-            <span>+{accruedCredits.toFixed(2)} TC</span>
+            <span>+{Number(accruedCredits || 0).toFixed(2)} TC</span>
           </div>
 
           <ClayButton
@@ -400,20 +479,26 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                     zIndex: 2
                   }}
                 >
-                  {hasMediaStream && cameraActive ? (
-                    <video
-                      ref={localVideoRef}
-                      autoPlay
-                      playsInline
-                      muted
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    />
-                  ) : (
-                    <div style={{ textAlign: 'center', color: '#f8fafc', padding: '0.5rem' }}>
+                  <video
+                    ref={localVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      display: (hasMediaStream && cameraActive) ? 'block' : 'none'
+                    }}
+                  />
+
+                  {(!hasMediaStream || !cameraActive) && (
+                    <div style={{ textAlign: 'center', color: '#f8fafc', padding: '0.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                       <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: '#38bdf8', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 0.35rem', fontWeight: 800 }}>
                         {currentUser.full_name.charAt(0)}
                       </div>
                       <span style={{ fontSize: '0.75rem', fontWeight: 600 }}>{currentUser.full_name.split(' ')[0]} (You)</span>
+                      <span style={{ fontSize: '0.65rem', color: '#94a3b8', marginTop: '2px' }}>Camera Off</span>
                     </div>
                   )}
 
@@ -661,7 +746,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               <p style={{ color: '#475569', fontSize: '0.95rem', marginTop: '0.5rem', lineHeight: 1.5 }}>
                 Successfully completed <strong>{settledResult.duration} minutes</strong> of live instruction.
                 <br />
-                Transferred <strong>{settledResult.credits.toFixed(2)} TimeCredits</strong> via atomic database transaction.
+                Transferred <strong>{Number(settledResult.credits || 0).toFixed(2)} TimeCredits</strong> via atomic database transaction.
               </p>
 
               <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'center', gap: '0.75rem' }}>
@@ -686,11 +771,11 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: '#64748b' }}>Session Credit Rate:</span>
-                  <strong>{creditRate.toFixed(2)} TC / hr</strong>
+                  <strong>{Number(creditRate || 0).toFixed(2)} TC / hr</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #cbd5e1', paddingTop: '0.5rem', fontSize: '1rem' }}>
                   <span style={{ fontWeight: 700 }}>Settlement Amount:</span>
-                  <strong style={{ color: '#059669' }}>+{accruedCredits.toFixed(2)} TC</strong>
+                  <strong style={{ color: '#059669' }}>+{Number(accruedCredits || 0).toFixed(2)} TC</strong>
                 </div>
               </div>
 

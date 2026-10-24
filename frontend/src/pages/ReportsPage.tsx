@@ -146,11 +146,11 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({ onNavigate }) => {
                     <td>{t.hours} hrs</td>
                     <td>
                       <span style={{ color: '#f59e0b', fontWeight: 700 }}>
-                        ★ {t.rating.toFixed(2)}
+                        ★ {Number(t.rating || 0).toFixed(2)}
                       </span>
                     </td>
                     <td>
-                      <strong style={{ color: '#059669' }}>{t.credits.toFixed(2)} TC</strong>
+                      <strong style={{ color: '#059669' }}>{Number(t.credits || 0).toFixed(2)} TC</strong>
                     </td>
                   </tr>
                 ))}

@@ -75,7 +75,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onUpdateU
             <h2 style={{ fontSize: '1.35rem', fontWeight: 800 }}>{currentUser.full_name}</h2>
             <div style={{ fontSize: '0.85rem', color: '#64748b' }}>{currentUser.email}</div>
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.35rem' }}>
-              <ClayBadge variant="amber">{currentUser.balance.toFixed(2)} TimeCredits</ClayBadge>
+              <ClayBadge variant="amber">{Number(currentUser.balance || 0).toFixed(2)} TimeCredits</ClayBadge>
               <ClayBadge variant="mint">Active Participant</ClayBadge>
             </div>
           </div>

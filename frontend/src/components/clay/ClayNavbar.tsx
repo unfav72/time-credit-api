@@ -110,7 +110,7 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
         </button>
 
         <div
-          onClick={() => onNavigate('landing')}
+          onClick={() => onNavigate(currentUser ? 'dashboard' : 'login')}
           style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', cursor: 'pointer' }}
         >
           <img
@@ -140,15 +140,6 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
         <ClayButton
           size="sm"
-          variant={currentPage === 'landing' ? 'primary' : 'secondary'}
-          onClick={() => onNavigate('landing')}
-          icon={<Home size={15} />}
-        >
-          Landing
-        </ClayButton>
-
-        <ClayButton
-          size="sm"
           variant={currentPage === 'dashboard' ? 'primary' : 'secondary'}
           onClick={() => onNavigate('dashboard')}
         >
@@ -174,15 +165,17 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
           Top Up Credits
         </ClayButton>
 
-        {/* Sign In Button */}
-        <ClayButton
-          size="sm"
-          variant={currentPage === 'login' ? 'primary' : 'secondary'}
-          onClick={() => onNavigate('login')}
-          icon={<LogIn size={14} />}
-        >
-          Sign In
-        </ClayButton>
+        {/* Sign In Button (only shown if not logged in) */}
+        {!currentUser && (
+          <ClayButton
+            size="sm"
+            variant={currentPage === 'login' ? 'primary' : 'secondary'}
+            onClick={() => onNavigate('login')}
+            icon={<LogIn size={14} />}
+          >
+            Sign In
+          </ClayButton>
+        )}
 
         {/* PWA Install Button */}
         <ClayButton
@@ -252,7 +245,7 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
                 <Coins size={13} />
               </div>
               <span style={{ fontWeight: 800, fontSize: '0.9rem', color: '#0f172a' }}>
-                {currentUser.balance.toFixed(2)}
+                {Number(currentUser.balance || 0).toFixed(2)}
               </span>
               <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b' }}>
                 TC
@@ -329,7 +322,7 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
                         {currentUser.role.toUpperCase()}
                       </ClayBadge>
                       <ClayBadge variant="amber">
-                        {currentUser.balance.toFixed(2)} TC
+                        {Number(currentUser.balance || 0).toFixed(2)} TC
                       </ClayBadge>
                     </div>
                   </div>

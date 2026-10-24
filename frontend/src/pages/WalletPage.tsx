@@ -71,7 +71,7 @@ export const WalletPage: React.FC<WalletPageProps> = ({ currentUser, onNavigate,
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem' }}>
         <ClayStatCard
           title="Current Available Balance"
-          value={`${currentUser.balance.toFixed(2)} TC`}
+          value={`${Number(currentUser.balance || 0).toFixed(2)} TC`}
           subtitle="DECIMAL(10, 2) Precision"
           icon={<Wallet size={22} color="#f59e0b" />}
           iconBg="#fef3c7"
@@ -81,7 +81,7 @@ export const WalletPage: React.FC<WalletPageProps> = ({ currentUser, onNavigate,
 
         <ClayStatCard
           title="Top-Up Credits Purchased"
-          value={`+${totalPurchased.toFixed(2)} TC`}
+          value={`+${Number(totalPurchased || 0).toFixed(2)} TC`}
           subtitle="Via Razorpay payment gateway"
           icon={<CreditCard size={22} color="#6366f1" />}
           iconBg="#ede9fe"
@@ -91,7 +91,7 @@ export const WalletPage: React.FC<WalletPageProps> = ({ currentUser, onNavigate,
 
         <ClayStatCard
           title="Credits Earned from Teaching"
-          value={`+${totalEarned.toFixed(2)} TC`}
+          value={`+${Number(totalEarned || 0).toFixed(2)} TC`}
           subtitle="From verified live video classes"
           icon={<ArrowDownLeft size={22} color="#059669" />}
           iconBg="#d1fae5"
@@ -101,7 +101,7 @@ export const WalletPage: React.FC<WalletPageProps> = ({ currentUser, onNavigate,
 
         <ClayStatCard
           title="Credits Spent on Learning"
-          value={`-${totalSpent.toFixed(2)} TC`}
+          value={`-${Number(totalSpent || 0).toFixed(2)} TC`}
           subtitle="Exchanged for 1-on-1 tutoring"
           icon={<ArrowUpRight size={22} color="#dc2626" />}
           iconBg="#ffe4e6"
@@ -250,7 +250,7 @@ export const WalletPage: React.FC<WalletPageProps> = ({ currentUser, onNavigate,
                         </td>
                         <td>
                           <strong style={{ fontSize: '0.95rem' }}>
-                            ₹{purchase.amount_inr ? purchase.amount_inr.toFixed(2) : (purchase.amount_paise / 100).toFixed(2)}
+                            ₹{Number(purchase.amount_inr != null ? purchase.amount_inr : (purchase.amount_paise / 100) || 0).toFixed(2)}
                           </strong>
                         </td>
                         <td>
@@ -328,7 +328,7 @@ export const WalletPage: React.FC<WalletPageProps> = ({ currentUser, onNavigate,
                       </td>
                       <td>
                         <strong style={{ color: isCredit ? '#059669' : '#dc2626', fontSize: '0.95rem' }}>
-                          {isCredit ? '+' : '-'}{tx.amount.toFixed(2)} TC
+                          {isCredit ? '+' : '-'}{Number(tx.amount || 0).toFixed(2)} TC
                         </strong>
                       </td>
                       <td>

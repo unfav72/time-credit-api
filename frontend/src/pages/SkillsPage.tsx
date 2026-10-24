@@ -58,7 +58,7 @@ export const SkillsPage: React.FC<SkillsPageProps> = ({ onNavigate }) => {
 
   const filteredSkills = skills.filter(s => {
     const matchesCat = selectedCategory ? s.category_id === selectedCategory : true;
-    const matchesSearch = s.name.toLowerCase().includes(search.toLowerCase()) || 
+    const matchesSearch = (s.name || '').toLowerCase().includes(search.toLowerCase()) || 
                           (s.description || '').toLowerCase().includes(search.toLowerCase());
     return matchesCat && matchesSearch;
   });

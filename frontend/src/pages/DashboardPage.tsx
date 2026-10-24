@@ -56,7 +56,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ currentUser, onNav
 
   const upcomingSession = sessions.find(s => s.status === 'SCHEDULED' || s.status === 'IN_PROGRESS');
   const pendingRequests = requests.filter(r => r.status === 'Pending');
-  const isLowBalance = currentUser.balance < 1.0;
+  const userBalance = Number(currentUser?.balance || 0);
+  const isLowBalance = userBalance < 1.0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -84,7 +85,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ currentUser, onNav
                 Low TimeCredit Balance Alert
               </div>
               <div style={{ fontSize: '0.825rem', color: '#b91c1c' }}>
-                You have only <strong>{currentUser.balance.toFixed(2)} TC</strong> remaining. Top up your TimeCredits to book live peer-learning classes without interruption.
+                You have only <strong>{userBalance.toFixed(2)} TC</strong> remaining. Top up your TimeCredits to book live peer-learning classes without interruption.
               </div>
             </div>
           </div>
@@ -118,7 +119,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ currentUser, onNav
             Welcome back, {currentUser.full_name}! 👋
           </h1>
           <p style={{ color: '#475569', fontSize: '0.95rem', marginTop: '0.25rem' }}>
-            You have <strong>{currentUser.balance.toFixed(2)} TimeCredits</strong> ready to exchange for live 1-on-1 peer teaching.
+            You have <strong>{userBalance.toFixed(2)} TimeCredits</strong> ready to exchange for live 1-on-1 peer teaching.
           </p>
         </div>
 
@@ -140,7 +141,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ currentUser, onNav
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem' }}>
         <ClayStatCard
           title="Available TimeCredits"
-          value={`${currentUser.balance.toFixed(2)} TC`}
+          value={`${userBalance.toFixed(2)} TC`}
           subtitle="1 TC = 15 minutes of live learning"
           icon={<Coins size={22} color="#f59e0b" />}
           iconBg="#fef3c7"

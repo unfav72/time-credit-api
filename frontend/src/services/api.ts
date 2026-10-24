@@ -51,6 +51,14 @@ export const TOPUP_PACKAGES: TopUpPackage[] = [
   }
 ];
 
+function normalizeUser(user: any): User {
+  if (!user) return user;
+  return {
+    ...user,
+    balance: Number(user.balance != null ? user.balance : 0)
+  };
+}
+
 class ApiClient {
   private token: string | null = null;
   private currentUser: User | null = null;
@@ -109,9 +117,9 @@ class ApiClient {
     try {
       const res = await this.request<{ user: User; token?: string }>('/api/v1/me', { method: 'GET' });
       if (res?.user) {
-        this.currentUser = res.user;
+        this.currentUser = normalizeUser(res.user);
         if (res.token) this.setToken(res.token);
-        return res.user;
+        return this.currentUser;
       }
     } catch {
       // Not logged in or invalid token
@@ -125,11 +133,11 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ email, password })
     });
-    this.currentUser = res.user;
+    this.currentUser = normalizeUser(res.user);
     if (res.token) {
       this.setToken(res.token);
     }
-    return res.user;
+    return this.currentUser;
   }
 
   async register(fullName: string, email: string, password = 'password123', confirmPassword = 'password123'): Promise<User> {
@@ -142,11 +150,11 @@ class ApiClient {
         confirm_password: confirmPassword
       })
     });
-    this.currentUser = res.user;
+    this.currentUser = normalizeUser(res.user);
     if (res.token) {
       this.setToken(res.token);
     }
-    return res.user;
+    return this.currentUser;
   }
 
   async logout(): Promise<void> {
@@ -165,8 +173,8 @@ class ApiClient {
       method: 'PUT',
       body: JSON.stringify({ full_name: fullName, bio })
     });
-    this.currentUser = res.user;
-    return res.user;
+    this.currentUser = normalizeUser(res.user);
+    return this.currentUser;
   }
 
   async changePassword(currentPassword: string, newPassword: string, confirmPassword: string): Promise<void> {
@@ -212,7 +220,10 @@ class ApiClient {
 
     const query = params.toString() ? `?${params.toString()}` : '';
     const res = await this.request<{ offers: ServiceOffer[] }>(`/api/v1/offers${query}`, { method: 'GET' });
-    return res.offers || [];
+    return (res.offers || []).map(o => ({
+      ...o,
+      credit_rate: Number(o.credit_rate != null ? o.credit_rate : 1.0)
+    }));
   }
 
   async createOffer(offer: Partial<ServiceOffer>): Promise<ServiceOffer> {
@@ -281,7 +292,11 @@ class ApiClient {
 
   async getSessions(): Promise<Session[]> {
     const res = await this.request<{ sessions: Session[] }>('/api/v1/sessions', { method: 'GET' });
-    return res.sessions || [];
+    return (res.sessions || []).map(s => ({
+      ...s,
+      credit_rate: Number(s.credit_rate != null ? s.credit_rate : 1.0),
+      rating: s.rating != null ? Number(s.rating) : undefined
+    }));
   }
 
   async joinSession(sessionId: number): Promise<{ roomId: string; isTeacher: boolean }> {
@@ -376,20 +391,26 @@ class ApiClient {
       })
     });
 
+    const newBalance = Number(res.new_balance != null ? res.new_balance : 0);
     if (this.currentUser) {
-      this.currentUser.balance = res.new_balance;
+      this.currentUser.balance = newBalance;
     }
 
     return {
       success: res.success,
-      credits_added: res.credits_added,
-      new_balance: res.new_balance
+      credits_added: Number(res.credits_added != null ? res.credits_added : 0),
+      new_balance: newBalance
     };
   }
 
   async getPurchaseHistory(): Promise<PurchaseHistoryItem[]> {
     const res = await this.request<{ history: PurchaseHistoryItem[] }>('/api/v1/payments/history', { method: 'GET' });
-    return res.history || [];
+    return (res.history || []).map(p => ({
+      ...p,
+      credits: Number(p.credits != null ? p.credits : 0),
+      amount_inr: p.amount_inr != null ? Number(p.amount_inr) : (Number(p.amount_paise || 0) / 100),
+      amount_paise: Number(p.amount_paise != null ? p.amount_paise : 0),
+    }));
   }
 
   async getWallet(): Promise<WalletData> {
@@ -407,12 +428,15 @@ class ApiClient {
     const totalPurchased = historyRes.reduce((acc, p) => acc + (p.status === 'PAID' ? p.credits : 0), 0);
 
     return {
-      balance: walletRes.balance,
-      total_earned: walletRes.total_earned,
-      total_spent: walletRes.total_spent,
-      total_purchased: totalPurchased,
-      total_transactions: walletRes.total_transactions,
-      transactions: walletRes.transactions || [],
+      balance: Number(walletRes?.balance != null ? walletRes.balance : 0),
+      total_earned: Number(walletRes?.total_earned != null ? walletRes.total_earned : 0),
+      total_spent: Number(walletRes?.total_spent != null ? walletRes.total_spent : 0),
+      total_purchased: Number(totalPurchased || 0),
+      total_transactions: Number(walletRes?.total_transactions != null ? walletRes.total_transactions : 0),
+      transactions: (walletRes?.transactions || []).map(tx => ({
+        ...tx,
+        amount: Number(tx.amount != null ? tx.amount : 0)
+      })),
       purchases: historyRes
     };
   }

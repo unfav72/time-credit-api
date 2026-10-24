@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { ClayNavbar } from './components/clay/ClayNavbar';
 import { ClaySidebar } from './components/clay/ClaySidebar';
 import { TopUpModal } from './components/TopUpModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // Pages
-import { LandingPage } from './pages/LandingPage';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { LiveClassroomPage } from './pages/LiveClassroomPage';
@@ -22,7 +22,7 @@ import { api } from './services/api';
 import type { User } from './types';
 
 export function App() {
-  const [currentPage, setCurrentPage] = useState<string>('landing');
+  const [currentPage, setCurrentPage] = useState<string>(() => api.getToken() ? 'dashboard' : 'login');
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [topUpModalOpen, setTopUpModalOpen] = useState<boolean>(false);
@@ -31,8 +31,21 @@ export function App() {
     // Check initial user from stored session
     api.getCurrentUser().then(user => {
       setCurrentUser(user);
+      if (user) {
+        setCurrentPage(prev => (prev === 'login' || prev === 'register' || prev === 'landing') ? 'dashboard' : prev);
+      } else {
+        setCurrentPage('login');
+      }
     });
   }, []);
+
+  const handleNavigate = (page: string) => {
+    if (page === 'landing') {
+      setCurrentPage(currentUser ? 'dashboard' : 'login');
+      return;
+    }
+    setCurrentPage(page);
+  };
 
   const handleOpenAuth = (mode: 'login' | 'register') => {
     setCurrentPage(mode);
@@ -44,19 +57,19 @@ export function App() {
     setCurrentPage('login');
   };
 
-  const handleTopUpSuccess = async (newBalance: number) => {
+  const handleTopUpSuccess = async () => {
     const updated = await api.getCurrentUser();
     if (updated) setCurrentUser(updated);
   };
 
-  const isAuthRequired = ['dashboard', 'classroom', 'wallet', 'browse', 'requests', 'sessions', 'profile', 'notifications', 'settings'].includes(currentPage);
+  const isAuthRequired = ['dashboard', 'classroom', 'wallet', 'browse', 'requests', 'sessions', 'profile', 'notifications', 'settings', 'skills', 'reports'].includes(currentPage);
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--clay-bg)' }}>
       {/* Top Navbar */}
       <ClayNavbar
         currentUser={currentUser}
-        onNavigate={setCurrentPage}
+        onNavigate={handleNavigate}
         currentPage={currentPage}
         onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         onOpenTopUp={() => setTopUpModalOpen(true)}
@@ -65,11 +78,11 @@ export function App() {
 
       {/* Main Layout Area */}
       <div style={{ display: 'flex', flex: 1, position: 'relative' }}>
-        {/* Sidebar (Rendered except when logged out or on landing, login, register, or toggled) */}
-        {currentUser && sidebarOpen && currentPage !== 'landing' && currentPage !== 'login' && currentPage !== 'register' && (
+        {/* Sidebar (Rendered except when logged out or on login, register, or toggled) */}
+        {currentUser && sidebarOpen && currentPage !== 'login' && currentPage !== 'register' && (
           <ClaySidebar
             currentPage={currentPage}
-            onNavigate={setCurrentPage}
+            onNavigate={handleNavigate}
             isOpen={sidebarOpen}
             onClose={() => setSidebarOpen(false)}
             role={currentUser.role}
@@ -81,63 +94,56 @@ export function App() {
         <main
           style={{
             flex: 1,
-            padding: (currentPage === 'landing' || currentPage === 'login' || currentPage === 'register') ? '0' : '1.5rem 2rem 4rem',
-            maxWidth: (currentPage === 'landing' || currentPage === 'login' || currentPage === 'register') ? '100%' : '1440px',
+            padding: (currentPage === 'login' || currentPage === 'register') ? '0' : '1.5rem 2rem 4rem',
+            maxWidth: (currentPage === 'login' || currentPage === 'register') ? '100%' : '1440px',
             width: '100%',
             margin: '0 auto',
             overflowX: 'hidden'
           }}
         >
-          {currentPage === 'landing' && (
-            <LandingPage
-              onNavigate={setCurrentPage}
-              onOpenTopUp={() => setTopUpModalOpen(true)}
-              onOpenAuth={handleOpenAuth}
-            />
-          )}
+          <ErrorBoundary onNavigateHome={() => setCurrentPage('dashboard')}>
+            {(currentPage === 'login' || currentPage === 'register' || (!currentUser && isAuthRequired)) && (
+              <LoginPage
+                onNavigate={handleNavigate}
+                onLoginSuccess={(user) => {
+                  setCurrentUser(user);
+                  setCurrentPage(isAuthRequired && currentPage !== 'login' && currentPage !== 'register' ? currentPage : 'dashboard');
+                }}
+                initialMode={currentPage === 'register' ? 'register' : 'login'}
+              />
+            )}
 
-          {(currentPage === 'login' || currentPage === 'register' || (!currentUser && isAuthRequired)) && (
-            <LoginPage
-              onNavigate={setCurrentPage}
-              onLoginSuccess={(user) => {
-                setCurrentUser(user);
-                setCurrentPage(isAuthRequired ? currentPage : 'dashboard');
-              }}
-              initialMode={currentPage === 'register' ? 'register' : 'login'}
-            />
-          )}
+            {currentUser && currentPage === 'dashboard' && (
+              <DashboardPage
+                currentUser={currentUser}
+                onNavigate={handleNavigate}
+                onOpenTopUp={() => setTopUpModalOpen(true)}
+              />
+            )}
 
-          {currentUser && currentPage === 'dashboard' && (
-            <DashboardPage
-              currentUser={currentUser}
-              onNavigate={setCurrentPage}
-              onOpenTopUp={() => setTopUpModalOpen(true)}
-            />
-          )}
+            {currentUser && currentPage === 'classroom' && (
+              <LiveClassroomPage
+                currentUser={currentUser}
+                onNavigate={handleNavigate}
+              />
+            )}
 
-          {currentUser && currentPage === 'classroom' && (
-            <LiveClassroomPage
-              currentUser={currentUser}
-              onNavigate={setCurrentPage}
-            />
-          )}
+            {currentUser && currentPage === 'wallet' && (
+              <WalletPage
+                currentUser={currentUser}
+                onNavigate={handleNavigate}
+                onOpenTopUp={() => setTopUpModalOpen(true)}
+              />
+            )}
 
-          {currentUser && currentPage === 'wallet' && (
-            <WalletPage
-              currentUser={currentUser}
-              onNavigate={setCurrentPage}
-              onOpenTopUp={() => setTopUpModalOpen(true)}
-            />
-          )}
+            {currentUser && currentPage === 'skills' && (
+              <SkillsPage onNavigate={handleNavigate} />
+            )}
 
-          {currentPage === 'skills' && (
-            <SkillsPage onNavigate={setCurrentPage} />
-          )}
-
-          {currentUser && currentPage === 'browse' && (
-            <BrowseServicesPage
-              currentUser={currentUser}
-              onNavigate={setCurrentPage}
+            {currentUser && currentPage === 'browse' && (
+              <BrowseServicesPage
+                currentUser={currentUser}
+                onNavigate={handleNavigate}
               onOpenTopUp={() => setTopUpModalOpen(true)}
             />
           )}
@@ -145,19 +151,19 @@ export function App() {
           {currentUser && currentPage === 'requests' && (
             <ServiceRequestsPage
               currentUser={currentUser}
-              onNavigate={setCurrentPage}
+              onNavigate={handleNavigate}
             />
           )}
 
           {currentUser && currentPage === 'sessions' && (
             <SessionsPage
               currentUser={currentUser}
-              onNavigate={setCurrentPage}
+              onNavigate={handleNavigate}
             />
           )}
 
           {currentPage === 'reports' && (
-            <ReportsPage onNavigate={setCurrentPage} />
+            <ReportsPage onNavigate={handleNavigate} />
           )}
 
           {currentUser && currentPage === 'profile' && (
@@ -170,6 +176,7 @@ export function App() {
           {currentUser && currentPage === 'notifications' && <NotificationsPage />}
 
           {currentUser && currentPage === 'settings' && <SettingsPage />}
+          </ErrorBoundary>
         </main>
       </div>
 

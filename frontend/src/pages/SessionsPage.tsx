@@ -107,7 +107,7 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
                   {isCompleted && sess.review_comment && (
                     <div style={{ marginTop: '0.65rem', padding: '0.6rem 0.85rem', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0', fontSize: '0.8rem' }}>
                       <div style={{ color: '#f59e0b', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                        {'★'.repeat(sess.rating || 5)} <span style={{ color: '#64748b' }}>Verified Review</span>
+                        {'★'.repeat(Math.max(1, Math.min(5, Math.round(Number(sess.rating) || 5))))} <span style={{ color: '#64748b' }}>Verified Review</span>
                       </div>
                       <div style={{ color: '#334155', marginTop: '0.2rem' }}>"{sess.review_comment}"</div>
                     </div>

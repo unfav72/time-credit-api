@@ -214,7 +214,7 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
           >
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: '#64748b' }}>Amount Paid:</span>
-              <strong>₹{lastPaymentResult.amountInr.toFixed(2)}</strong>
+              <strong>₹{Number(lastPaymentResult.amountInr || 0).toFixed(2)}</strong>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: '#64748b' }}>Credits Added:</span>
@@ -222,7 +222,7 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #cbd5e1', paddingTop: '0.5rem' }}>
               <span style={{ fontWeight: 700 }}>New Wallet Balance:</span>
-              <strong style={{ fontSize: '1rem', color: '#6366f1' }}>{lastPaymentResult.newBalance.toFixed(2)} TC</strong>
+              <strong style={{ fontSize: '1rem', color: '#6366f1' }}>{Number(lastPaymentResult.newBalance || 0).toFixed(2)} TC</strong>
             </div>
           </div>
 

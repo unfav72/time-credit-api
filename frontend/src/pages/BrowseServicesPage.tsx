@@ -65,13 +65,15 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
   };
 
   const filteredOffers = offers.filter(o => 
-    o.title.toLowerCase().includes(search.toLowerCase()) ||
-    o.teacher_name?.toLowerCase().includes(search.toLowerCase()) ||
-    o.description.toLowerCase().includes(search.toLowerCase())
+    (o.title || '').toLowerCase().includes(search.toLowerCase()) ||
+    (o.teacher_name || '').toLowerCase().includes(search.toLowerCase()) ||
+    (o.description || '').toLowerCase().includes(search.toLowerCase())
   );
 
-  const requiredCredits = selectedOffer ? (duration / 60) * selectedOffer.credit_rate : 1.0;
-  const hasInsufficientCredits = currentUser.balance < requiredCredits;
+  const selectedRate = Number(selectedOffer?.credit_rate || 1.0);
+  const requiredCredits = selectedOffer ? (duration / 60) * selectedRate : 1.0;
+  const userBalance = Number(currentUser?.balance || 0);
+  const hasInsufficientCredits = userBalance < requiredCredits;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -145,7 +147,7 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
                 <span style={{ fontSize: '0.7rem', color: '#94a3b8', textTransform: 'uppercase', fontWeight: 700 }}>Rate</span>
                 <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                   <Coins size={16} color="#f59e0b" />
-                  <span>{offer.credit_rate.toFixed(2)} TC</span>
+                  <span>{Number(offer.credit_rate || 0).toFixed(2)} TC</span>
                   <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 500 }}>/ hour</span>
                 </div>
               </div>
@@ -202,7 +204,7 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
                   <span>Insufficient TimeCredits for this Session</span>
                 </div>
                 <p style={{ color: '#be123c', fontSize: '0.825rem', margin: 0, lineHeight: 1.4 }}>
-                  This {duration}-minute session requires <strong>{requiredCredits.toFixed(2)} TimeCredits</strong>, but your available balance is <strong>{currentUser.balance.toFixed(2)} TC</strong>. Top up your TimeCredits to continue.
+                  This {duration}-minute session requires <strong>{Number(requiredCredits || 0).toFixed(2)} TimeCredits</strong>, but your available balance is <strong>{userBalance.toFixed(2)} TC</strong>. Top up your TimeCredits to continue.
                 </p>
                 <div style={{ alignSelf: 'flex-start', marginTop: '0.25rem' }}>
                   <ClayButton
@@ -236,9 +238,9 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
                 value={duration}
                 onChange={(e) => setDuration(Number(e.target.value))}
               >
-                <option value={30}>30 Minutes ({(0.5 * (selectedOffer?.credit_rate || 1.0)).toFixed(2)} TimeCredits)</option>
-                <option value={60}>60 Minutes ({(1.0 * (selectedOffer?.credit_rate || 1.0)).toFixed(2)} TimeCredits)</option>
-                <option value={90}>90 Minutes ({(1.5 * (selectedOffer?.credit_rate || 1.0)).toFixed(2)} TimeCredits)</option>
+                <option value={30}>30 Minutes ({(0.5 * selectedRate).toFixed(2)} TimeCredits)</option>
+                <option value={60}>60 Minutes ({(1.0 * selectedRate).toFixed(2)} TimeCredits)</option>
+                <option value={90}>90 Minutes ({(1.5 * selectedRate).toFixed(2)} TimeCredits)</option>
               </select>
             </div>
 
@@ -250,8 +252,8 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
             />
 
             <div style={{ padding: '0.75rem', borderRadius: '12px', background: '#f1f5f9', fontSize: '0.8rem', color: '#475569', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>Available balance: <strong>{currentUser.balance.toFixed(2)} TC</strong></span>
-              <span>Cost: <strong style={{ color: '#059669' }}>{requiredCredits.toFixed(2)} TC</strong></span>
+              <span>Available balance: <strong>{userBalance.toFixed(2)} TC</strong></span>
+              <span>Cost: <strong style={{ color: '#059669' }}>{Number(requiredCredits || 0).toFixed(2)} TC</strong></span>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
