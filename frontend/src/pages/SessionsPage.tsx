@@ -38,6 +38,8 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
     setSessions(list);
   };
 
+  const [submittingReview, setSubmittingReview] = useState(false);
+
   const handleOpenReview = (session: Session) => {
     setSelectedSession(session);
     setRating(5);
@@ -45,13 +47,27 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
     setReviewModalOpen(true);
   };
 
-  const handleSubmitReview = () => {
-    if (selectedSession) {
+  const handleSubmitReview = async () => {
+    if (!selectedSession) return;
+    setSubmittingReview(true);
+    try {
+      await api.submitReview(selectedSession.id, rating, comment);
       selectedSession.rating = rating;
       selectedSession.review_comment = comment;
+      setReviewModalOpen(false);
+      await loadSessions();
+    } catch (err: any) {
+      alert('Error submitting review: ' + err?.message);
+    } finally {
+      setSubmittingReview(false);
     }
-    setReviewModalOpen(false);
-    alert('Thank you! Your verified session review has been saved in the MySQL reviews table.');
+  };
+
+  const handleJoinClassroom = async (session: Session) => {
+    try {
+      await api.joinSession(session.id);
+    } catch {}
+    onNavigate('classroom');
   };
 
   return (
@@ -64,13 +80,18 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
             <ClayBadge variant="mint">Live Sessions</ClayBadge>
           </div>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
-            Manage scheduled classroom dates, join authorized Jitsi Meet rooms, and review completed lessons.
+            Manage scheduled classroom dates, join live video rooms, and review completed lessons.
           </p>
         </div>
 
-        <ClayButton variant="primary" onClick={() => onNavigate('classroom')} icon={<Video size={16} />}>
-          Open Live Classroom
-        </ClayButton>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+          <ClayButton variant="primary" onClick={() => onNavigate('browse')} icon={<Video size={16} />}>
+            + Host Live Session
+          </ClayButton>
+          <ClayButton variant="secondary" onClick={() => onNavigate('classroom')} icon={<Video size={16} />}>
+            Open Classroom
+          </ClayButton>
+        </div>
       </div>
 
       {/* Sessions List */}
@@ -117,7 +138,7 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
                 {/* Action buttons */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                   {isScheduled && (
-                    <ClayButton variant="mint" onClick={() => onNavigate('classroom')} icon={<Video size={14} />}>
+                    <ClayButton variant="mint" onClick={() => handleJoinClassroom(sess)} icon={<Video size={14} />}>
                       Join Classroom
                     </ClayButton>
                   )}
@@ -167,7 +188,7 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
 
           <ClayInput
             label="Feedback & Knowledge Acquired"
-            placeholder="How was the teacher's explanation? What SQL / skill concepts did you learn?"
+            placeholder="How was the teacher's explanation? What skill concepts did you learn?"
             value={comment}
             onChange={(e) => setComment(e.target.value)}
           />
@@ -176,8 +197,8 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
             <ClayButton variant="secondary" onClick={() => setReviewModalOpen(false)}>
               Cancel
             </ClayButton>
-            <ClayButton variant="primary" onClick={handleSubmitReview}>
-              Submit Review
+            <ClayButton variant="primary" onClick={handleSubmitReview} disabled={submittingReview}>
+              {submittingReview ? 'Submitting...' : 'Submit Review'}
             </ClayButton>
           </div>
         </div>

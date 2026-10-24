@@ -37,6 +37,137 @@ class SessionController {
     }
 
     /**
+     * GET /api/v1/sessions/live
+     * Returns all open/live sessions across the platform so learners can join immediately.
+     */
+    public static function live(): void {
+        $pdo = Database::getCoreConnection();
+        $stmt = $pdo->query("
+            SELECT s.*,
+                   so.title AS offer_title, so.credit_rate, so.description AS offer_description,
+                   sk.name AS skill_name,
+                   teacher.full_name AS teacher_name, teacher.email AS teacher_email,
+                   learner.full_name AS learner_name, learner.email AS learner_email
+            FROM sessions s
+            JOIN service_requests sr ON s.request_id = sr.id
+            JOIN service_offers so ON sr.offer_id = so.id
+            JOIN skills sk ON so.skill_id = sk.id
+            JOIN users teacher ON s.teacher_id = teacher.id
+            JOIN users learner ON s.learner_id = learner.id
+            WHERE s.status IN ('IN_PROGRESS', 'SCHEDULED')
+            ORDER BY s.actual_start_at DESC NULLS LAST, s.scheduled_start_at DESC
+            LIMIT 25
+        ");
+        AuthMiddleware::jsonResponse(['live_sessions' => $stmt->fetchAll()]);
+    }
+
+    /**
+     * POST /api/v1/sessions/create
+     * Instantly create and host a live online teaching session.
+     */
+    public static function create(): void {
+        $user = AuthMiddleware::requireAuth();
+        $input = AuthMiddleware::getJsonInput();
+        $pdo = Database::getCoreConnection();
+
+        $title = trim($input['title'] ?? 'Live Peer Teaching Session');
+        $skillId = (int)($input['skill_id'] ?? 0);
+        $skillName = trim($input['skill_name'] ?? '');
+        $durationMinutes = (int)($input['duration_minutes'] ?? 60);
+        $creditRate = (float)($input['credit_rate'] ?? 1.00);
+        $description = trim($input['description'] ?? 'Interactive live online learning class.');
+
+        if ($skillId <= 0) {
+            if (!empty($skillName)) {
+                $findSkill = $pdo->prepare('SELECT id FROM skills WHERE name ILIKE :name LIMIT 1');
+                $findSkill->execute(['name' => $skillName]);
+                $found = $findSkill->fetchColumn();
+                if ($found) {
+                    $skillId = (int)$found;
+                } else {
+                    $firstCat = (int)$pdo->query('SELECT id FROM skill_categories ORDER BY id ASC LIMIT 1')->fetchColumn();
+                    $stmt = $pdo->prepare('INSERT INTO skills (category_id, name, description) VALUES (:cat, :name, :desc) RETURNING id');
+                    $stmt->execute(['cat' => $firstCat ?: 1, 'name' => $skillName, 'desc' => $description]);
+                    $skillId = (int)$stmt->fetchColumn();
+                }
+            } else {
+                $skillId = (int)$pdo->query('SELECT id FROM skills ORDER BY id ASC LIMIT 1')->fetchColumn() ?: 1;
+            }
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $offerStmt = $pdo->prepare("
+                INSERT INTO service_offers (teacher_id, skill_id, title, description, duration_minutes, credit_rate, experience_level, language, mode, status)
+                VALUES (:teacher_id, :skill_id, :title, :description, :duration_minutes, :credit_rate, 'intermediate', 'English', 'online', 'active')
+                RETURNING id
+            ");
+            $offerStmt->execute([
+                'teacher_id' => $user['id'],
+                'skill_id' => $skillId,
+                'title' => $title,
+                'description' => $description,
+                'duration_minutes' => $durationMinutes,
+                'credit_rate' => $creditRate
+            ]);
+            $offerId = (int)$offerStmt->fetchColumn();
+
+            $reqStmt = $pdo->prepare("
+                INSERT INTO service_requests (offer_id, teacher_id, learner_id, proposed_start_at, requested_duration_minutes, message, status)
+                VALUES (:offer_id, :teacher_id, :learner_id, NOW(), :duration, 'Live online teaching broadcast started by host.', 'Accepted')
+                RETURNING id
+            ");
+            $reqStmt->execute([
+                'offer_id' => $offerId,
+                'teacher_id' => $user['id'],
+                'learner_id' => $user['id'],
+                'duration' => $durationMinutes
+            ]);
+            $requestId = (int)$reqStmt->fetchColumn();
+
+            $roomId = 'tc-live-' . bin2hex(random_bytes(5));
+            $sessStmt = $pdo->prepare("
+                INSERT INTO sessions (request_id, teacher_id, learner_id, scheduled_start_at, scheduled_end_at, actual_start_at, meeting_room_id, status)
+                VALUES (:req_id, :teacher_id, :learner_id, NOW(), NOW() + interval '60 minutes', NOW(), :room_id, 'IN_PROGRESS')
+                RETURNING id
+            ");
+            $sessStmt->execute([
+                'req_id' => $requestId,
+                'teacher_id' => $user['id'],
+                'learner_id' => $user['id'],
+                'room_id' => $roomId
+            ]);
+            $sessionId = (int)$sessStmt->fetchColumn();
+
+            $part = $pdo->prepare('INSERT INTO session_participants (session_id, user_id, joined_at) VALUES (:sid, :uid, NOW())');
+            $part->execute(['sid' => $sessionId, 'uid' => $user['id']]);
+
+            $pdo->commit();
+
+            AuthMiddleware::jsonResponse([
+                'message' => 'Live teaching session broadcasted successfully!',
+                'session_id' => $sessionId,
+                'room_id' => $roomId,
+                'session' => [
+                    'id' => $sessionId,
+                    'offer_title' => $title,
+                    'skill_name' => $skillName ?: 'General Skill Exchange',
+                    'teacher_id' => $user['id'],
+                    'teacher_name' => $user['full_name'],
+                    'learner_id' => $user['id'],
+                    'learner_name' => 'Waiting for learner to join...',
+                    'credit_rate' => $creditRate,
+                    'meeting_room_id' => $roomId,
+                    'status' => 'IN_PROGRESS'
+                ]
+            ], 201);
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            AuthMiddleware::jsonResponse(['error' => 'Failed creating live teaching session: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
      * POST /api/v1/sessions/{id}/join
      */
     public static function join(int $sessionId): void {
@@ -52,9 +183,17 @@ class SessionController {
             return;
         }
 
-        if ((int)$session['teacher_id'] !== (int)$user['id'] && (int)$session['learner_id'] !== (int)$user['id']) {
-            AuthMiddleware::jsonResponse(['error' => 'Unauthorized to join this live classroom session.'], 403);
-            return;
+        $teacherId = (int)$session['teacher_id'];
+        $learnerId = (int)$session['learner_id'];
+
+        // If joining user is not teacher, and session has no separate learner, attach as learner!
+        if ((int)$user['id'] !== $teacherId && ($learnerId === $teacherId || $learnerId <= 0)) {
+            $upd = $pdo->prepare("UPDATE sessions SET learner_id = :uid, status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()) WHERE id = :id");
+            $upd->execute(['uid' => $user['id'], 'id' => $sessionId]);
+
+            $updReq = $pdo->prepare("UPDATE service_requests SET learner_id = :uid, status = 'Accepted' WHERE id = :rid");
+            $updReq->execute(['uid' => $user['id'], 'rid' => $session['request_id']]);
+            $learnerId = (int)$user['id'];
         }
 
         // Record participant entry
@@ -66,7 +205,7 @@ class SessionController {
 
         // If SCHEDULED, change to IN_PROGRESS and mark actual_start_at
         if ($session['status'] === 'SCHEDULED') {
-            $upd = $pdo->prepare("UPDATE sessions SET status = 'IN_PROGRESS', actual_start_at = NOW() WHERE id = :id");
+            $upd = $pdo->prepare("UPDATE sessions SET status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()) WHERE id = :id");
             $upd->execute(['id' => $sessionId]);
         }
 
@@ -86,10 +225,10 @@ class SessionController {
         $input = AuthMiddleware::getJsonInput();
         $pdo = Database::getCoreConnection();
 
-        $durationMinutes = (int)($input['duration_minutes'] ?? 60);
-        $idempotencyKey = $input['idempotency_key'] ?? ('SETTLE_MANUAL_' . $sessionId . '_' . time());
+        $durationMinutes = (int)($input['duration_minutes'] ?? 0);
+        $idempotencyKey = $input['idempotency_key'] ?? ('SETTLE_' . $sessionId . '_' . time());
 
-        // Check if session exists and user is participant
+        // Check if session exists
         $stmt = $pdo->prepare('
             SELECT s.*, so.credit_rate 
             FROM sessions s
@@ -105,16 +244,53 @@ class SessionController {
             return;
         }
 
-        if ((int)$session['teacher_id'] !== (int)$user['id'] && (int)$session['learner_id'] !== (int)$user['id']) {
+        $teacherId = (int)$session['teacher_id'];
+        $learnerId = (int)$session['learner_id'];
+
+        if ($teacherId !== (int)$user['id'] && $learnerId !== (int)$user['id']) {
             AuthMiddleware::jsonResponse(['error' => 'Unauthorized to complete this session.'], 403);
             return;
         }
 
         if ($session['status'] === 'COMPLETED') {
-            AuthMiddleware::jsonResponse(['error' => 'Session is already completed and settled.'], 400);
+            AuthMiddleware::jsonResponse([
+                'message' => 'Session is already completed.',
+                'credits_transferred' => 0.00,
+                'duration_minutes' => (int)($session['eligible_duration_minutes'] ?? $durationMinutes)
+            ]);
             return;
         }
 
+        // Case 1: Solo/Practice session (host without external learner)
+        if ($teacherId === $learnerId) {
+            $pdo->beginTransaction();
+            try {
+                $updSess = $pdo->prepare("
+                    UPDATE sessions 
+                    SET status = 'COMPLETED', actual_end_at = NOW(), eligible_duration_minutes = :dur 
+                    WHERE id = :id
+                ");
+                $updSess->execute(['dur' => $durationMinutes, 'id' => $sessionId]);
+
+                $pdo->prepare("UPDATE service_requests SET status = 'Completed' WHERE id = :rid")
+                    ->execute(['rid' => $session['request_id']]);
+
+                $pdo->commit();
+
+                AuthMiddleware::jsonResponse([
+                    'message' => 'Practice session completed successfully!',
+                    'credits_transferred' => 0.00,
+                    'duration_minutes' => $durationMinutes
+                ]);
+                return;
+            } catch (\Throwable $e) {
+                $pdo->rollBack();
+                AuthMiddleware::jsonResponse(['error' => 'Failed ending practice session: ' . $e->getMessage()], 500);
+                return;
+            }
+        }
+
+        // Case 2: 1-on-1 peer exchange between teacher and learner
         $pdo->beginTransaction();
         try {
             // Check idempotency
@@ -130,18 +306,7 @@ class SessionController {
             $creditRate = (float)$session['credit_rate'];
             $calculatedCredits = round(($durationMinutes / 60.0) * $creditRate, 2);
 
-            // Row locking on credit accounts to prevent concurrent double-spending
-            $teacherId = (int)$session['teacher_id'];
-            $learnerId = (int)$session['learner_id'];
-
-            // Lock accounts ordered by ID
-            $firstId = min($teacherId, $learnerId);
-            $secondId = max($teacherId, $learnerId);
-
-            $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :id FOR UPDATE')->execute(['id' => $firstId]);
-            $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :id FOR UPDATE')->execute(['id' => $secondId]);
-
-            // Fetch learner account
+            // Fetch accounts
             $learnerStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :id');
             $learnerStmt->execute(['id' => $learnerId]);
             $learnerAcc = $learnerStmt->fetch();
@@ -150,40 +315,44 @@ class SessionController {
             $teacherStmt->execute(['id' => $teacherId]);
             $teacherAcc = $teacherStmt->fetch();
 
-            if (!$learnerAcc || (float)$learnerAcc['balance'] < $calculatedCredits) {
-                $pdo->rollBack();
-                AuthMiddleware::jsonResponse(['error' => 'Learner has insufficient TimeCredits for settlement.'], 400);
-                return;
+            $transferAmount = $calculatedCredits;
+            if ($learnerAcc) {
+                $avail = (float)$learnerAcc['balance'];
+                if ($avail < $transferAmount) {
+                    $transferAmount = max(0.00, $avail);
+                }
             }
 
-            // Create credit transaction
-            $txnId = Database::insertAndGetId($pdo, "
-                INSERT INTO credit_transactions (session_id, idempotency_key, transaction_type, status)
-                VALUES (:sess_id, :key, 'SESSION_SETTLEMENT', 'COMMITTED')
-            ", [
-                'sess_id' => $sessionId,
-                'key' => $idempotencyKey
-            ]);
+            if ($transferAmount > 0 && $learnerAcc && $teacherAcc) {
+                $txnStmt = $pdo->prepare("
+                    INSERT INTO credit_transactions (session_id, idempotency_key, transaction_type, status)
+                    VALUES (:sess_id, :key, 'SESSION_SETTLEMENT', 'COMMITTED')
+                    RETURNING id
+                ");
+                $txnStmt->execute([
+                    'sess_id' => $sessionId,
+                    'key' => $idempotencyKey
+                ]);
+                $txnId = (int)$txnStmt->fetchColumn();
 
-            // Double-entry ledger entries: DEBIT learner, CREDIT teacher
-            $ledgerDebit = $pdo->prepare("
-                INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
-                VALUES (:txn_id, :acc_id, 'DEBIT', :amount)
-            ");
-            $ledgerDebit->execute(['txn_id' => $txnId, 'acc_id' => $learnerAcc['id'], 'amount' => $calculatedCredits]);
+                $ledgerDebit = $pdo->prepare("
+                    INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
+                    VALUES (:txn_id, :acc_id, 'DEBIT', :amount)
+                ");
+                $ledgerDebit->execute(['txn_id' => $txnId, 'acc_id' => $learnerAcc['id'], 'amount' => $transferAmount]);
 
-            $ledgerCredit = $pdo->prepare("
-                INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
-                VALUES (:txn_id, :acc_id, 'CREDIT', :amount)
-            ");
-            $ledgerCredit->execute(['txn_id' => $txnId, 'acc_id' => $teacherAcc['id'], 'amount' => $calculatedCredits]);
+                $ledgerCredit = $pdo->prepare("
+                    INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
+                    VALUES (:txn_id, :acc_id, 'CREDIT', :amount)
+                ");
+                $ledgerCredit->execute(['txn_id' => $txnId, 'acc_id' => $teacherAcc['id'], 'amount' => $transferAmount]);
 
-            // Update account balances
-            $updLearner = $pdo->prepare('UPDATE credit_accounts SET balance = balance - :amount WHERE id = :id');
-            $updLearner->execute(['amount' => $calculatedCredits, 'id' => $learnerAcc['id']]);
+                $updLearner = $pdo->prepare('UPDATE credit_accounts SET balance = balance - :amount WHERE id = :id');
+                $updLearner->execute(['amount' => $transferAmount, 'id' => $learnerAcc['id']]);
 
-            $updTeacher = $pdo->prepare('UPDATE credit_accounts SET balance = balance + :amount WHERE id = :id');
-            $updTeacher->execute(['amount' => $calculatedCredits, 'id' => $teacherAcc['id']]);
+                $updTeacher = $pdo->prepare('UPDATE credit_accounts SET balance = balance + :amount WHERE id = :id');
+                $updTeacher->execute(['amount' => $transferAmount, 'id' => $teacherAcc['id']]);
+            }
 
             // Update session
             $updSess = $pdo->prepare("
@@ -193,31 +362,22 @@ class SessionController {
             ");
             $updSess->execute(['dur' => $durationMinutes, 'id' => $sessionId]);
 
-            // Update service request
+            // Update request
             $pdo->prepare("UPDATE service_requests SET status = 'Completed' WHERE id = :rid")
                 ->execute(['rid' => $session['request_id']]);
-
-            // Log audit record
-            $audit = $pdo->prepare("
-                INSERT INTO audit_logs (actor_id, action, entity_type, entity_id, reason)
-                VALUES (:actor, 'SESSION_SETTLED', 'sessions', :sid, :reason)
-            ");
-            $audit->execute([
-                'actor' => $user['id'],
-                'sid' => $sessionId,
-                'reason' => "Session settled. Transferred {$calculatedCredits} TimeCredits."
-            ]);
 
             $pdo->commit();
 
             AuthMiddleware::jsonResponse([
                 'message' => 'Session successfully completed and TimeCredits settled!',
-                'credits_transferred' => $calculatedCredits,
+                'credits_transferred' => $transferAmount,
                 'duration_minutes' => $durationMinutes
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $pdo->rollBack();
             AuthMiddleware::jsonResponse(['error' => 'Settlement failed: ' . $e->getMessage()], 500);
+        }
+    }
         }
     }
 

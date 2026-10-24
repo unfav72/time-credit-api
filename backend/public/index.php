@@ -318,6 +318,10 @@ try {
     // --- SESSIONS & CLASSROOM ROUTES ---
     elseif ($requestUri === '/api/v1/sessions' && $method === 'GET') {
         SessionController::index();
+    } elseif ($requestUri === '/api/v1/sessions/live' && $method === 'GET') {
+        SessionController::live();
+    } elseif ($requestUri === '/api/v1/sessions/create' && $method === 'POST') {
+        SessionController::create();
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/join$#', $requestUri, $matches) && $method === 'POST') {
         SessionController::join((int)$matches[1]);
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/complete$#', $requestUri, $matches) && $method === 'POST') {

@@ -152,7 +152,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ currentUser, onNav
 
         <ClayStatCard
           title="Skills Offered & Wanted"
-          value={`${currentUser.skills_offered_count || 3} Offered / ${currentUser.skills_wanted_count || 2} Wanted`}
+          value={`${currentUser.skills_offered_count ?? 0} Offered / ${currentUser.skills_wanted_count ?? 0} Wanted`}
           subtitle="Matched via relational joins"
           icon={<BookOpen size={22} color="#6366f1" />}
           iconBg="#ede9fe"

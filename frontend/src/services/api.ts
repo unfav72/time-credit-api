@@ -325,6 +325,100 @@ class ApiClient {
     });
   }
 
+  async createTeachingSession(data: {
+    title: string;
+    skill_id?: number;
+    skill_name?: string;
+    credit_rate?: number;
+    duration_minutes?: number;
+    description?: string;
+  }): Promise<{ session_id: number; room_id: string; session: Session }> {
+    const res = await this.request<{
+      message: string;
+      session_id: number;
+      room_id: string;
+      session: Session;
+    }>('/api/v1/sessions/create', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+    return res;
+  }
+
+  async getLiveSessions(): Promise<Session[]> {
+    const res = await this.request<{ live_sessions: Session[] }>('/api/v1/sessions/live', { method: 'GET' });
+    return (res.live_sessions || []).map(s => ({
+      ...s,
+      credit_rate: Number(s.credit_rate != null ? s.credit_rate : 1.0),
+      rating: s.rating != null ? Number(s.rating) : undefined
+    }));
+  }
+
+  async getTeacherLeaderboard(): Promise<Array<{
+    teacher_id: number;
+    teacher_name: string;
+    email: string;
+    completed_sessions: number;
+    total_hours_taught: number;
+    average_rating: number;
+    current_balance: number;
+  }>> {
+    const res = await this.request<{
+      leaderboard: Array<{
+        teacher_id: number;
+        teacher_name: string;
+        email: string;
+        completed_sessions: number;
+        total_hours_taught: number;
+        average_rating: number;
+        current_balance: number;
+      }>;
+    }>('/api/v1/reports/teacher-leaderboard', { method: 'GET' });
+    return res.leaderboard || [];
+  }
+
+  async getPopularSkillsReport(): Promise<Array<{
+    id: number;
+    skill_name: string;
+    category_name: string;
+    total_offers: number;
+    total_requests: number;
+    average_rating: number;
+  }>> {
+    const res = await this.request<{
+      popular_skills: Array<{
+        id: number;
+        skill_name: string;
+        category_name: string;
+        total_offers: number;
+        total_requests: number;
+        average_rating: number;
+      }>;
+    }>('/api/v1/reports/popular-skills', { method: 'GET' });
+    return res.popular_skills || [];
+  }
+
+  async getPlatformMetrics(): Promise<{
+    total_users: number;
+    total_skills: number;
+    completed_sessions: number;
+    total_minutes_exchanged: number;
+    total_credits_in_circulation: number;
+    total_ledger_entries: number;
+  }> {
+    const res = await this.request<{
+      metrics: {
+        total_users: number;
+        total_skills: number;
+        completed_sessions: number;
+        total_minutes_exchanged: number;
+        total_credits_in_circulation: number;
+        total_ledger_entries: number;
+      };
+    }>('/api/v1/reports/platform-metrics', { method: 'GET' });
+    return res.metrics;
+  }
+
   // =========================================================================
   // 4. WALLET & RAZORPAY TOP-UP
   // =========================================================================

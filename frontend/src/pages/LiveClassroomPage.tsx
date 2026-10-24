@@ -36,7 +36,7 @@ interface LiveClassroomPageProps {
 
 export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUser, onNavigate }) => {
   const [activeSession, setActiveSession] = useState<Session | null>(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(1800); // 30 minutes preloaded for demo/testing
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isTimerRunning, setIsTimerRunning] = useState(true);
 
   // Real WebRTC MediaStream states
@@ -52,17 +52,15 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   // Settlement modal states
   const [settleModalOpen, setSettleModalOpen] = useState(false);
   const [settling, setSettling] = useState(false);
+  const [settleError, setSettleError] = useState<string | null>(null);
   const [settledResult, setSettledResult] = useState<{ credits: number; duration: number } | null>(null);
 
   // In-meeting interactive whiteboard & chat
   const [activeTab, setActiveTab] = useState<'chat' | 'whiteboard' | 'notes'>('whiteboard');
   const [sharedNotes, setSharedNotes] = useState(
-    '// Collaborative In-Built Teaching Notebook\n// Topic: Database Normalization & Query Tuning\n\n1. First Normal Form (1NF): Atomic attributes, no repeating groups.\n2. Second Normal Form (2NF): In 1NF + no partial dependency on candidate keys.\n3. Third Normal Form (3NF): In 2NF + no transitive dependency.\n4. Boyce-Codd (BCNF): For every functional dependency X -> Y, X must be a superkey.'
+    '// Collaborative In-Built Teaching Notebook\n// Take notes, share code snippets, and review topics discussed in this live class.\n'
   );
-  const [chatMessages, setChatMessages] = useState<Array<{ sender: string; text: string; time: string }>>([
-    { sender: 'Priya Patel', text: 'Welcome to our in-built live classroom! Can everyone hear and see clearly?', time: '14:00' },
-    { sender: currentUser.full_name, text: 'Yes, audio and video are working perfectly!', time: '14:01' }
-  ]);
+  const [chatMessages, setChatMessages] = useState<Array<{ sender: string; text: string; time: string }>>([]);
   const [messageInput, setMessageInput] = useState('');
 
   useEffect(() => {
@@ -111,9 +109,19 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   }, [isTimerRunning]);
 
   const loadSession = async () => {
-    const list = await api.getSessions();
-    const current = list.find(s => s.status === 'SCHEDULED' || s.status === 'IN_PROGRESS') || list[0];
-    setActiveSession(current);
+    try {
+      const list = await api.getSessions();
+      const current = list.find(s => s.status === 'SCHEDULED' || s.status === 'IN_PROGRESS') || list[0];
+      if (current) {
+        setActiveSession(current);
+        if (current.actual_start_at) {
+          const diff = Math.max(0, Math.floor((Date.now() - new Date(current.actual_start_at).getTime()) / 1000));
+          setElapsedSeconds(diff);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not load session:', err);
+    }
   };
 
   const initializeMedia = async (forceVideo = true, forceAudio = true) => {
@@ -277,13 +285,38 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const creditRate = activeSession?.credit_rate || 1.0;
   const accruedCredits = Math.round((elapsedMinutes / 60.0) * creditRate * 100) / 100;
 
+  const stopAllMediaTracks = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        try { track.stop(); } catch {}
+      });
+      streamRef.current = null;
+    }
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(track => {
+        try { track.stop(); } catch {}
+      });
+      screenStreamRef.current = null;
+    }
+    setHasMediaStream(false);
+    setCameraActive(false);
+    setMicActive(false);
+    setScreenSharing(false);
+  };
+
   const handleEndAndSettle = async () => {
-    if (!activeSession) return;
     setSettling(true);
+    setSettleError(null);
+    stopAllMediaTracks();
+    setIsTimerRunning(false);
+
     try {
-      const res = await api.completeSession(activeSession.id, elapsedMinutes);
-      setIsTimerRunning(false);
-      setSettledResult({ credits: res.transferredCredits, duration: elapsedMinutes });
+      if (activeSession) {
+        const res = await api.completeSession(activeSession.id, elapsedMinutes);
+        setSettledResult({ credits: res.transferredCredits, duration: elapsedMinutes });
+      } else {
+        setSettledResult({ credits: accruedCredits, duration: elapsedMinutes });
+      }
 
       confetti({
         particleCount: 90,
@@ -291,10 +324,17 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         origin: { y: 0.6 }
       });
     } catch (e: any) {
-      alert('Error settling session: ' + e?.message);
+      setSettleError(e?.message || 'Error occurred during credit settlement.');
     } finally {
       setSettling(false);
     }
+  };
+
+  const handleExitClassroom = (targetPage: string = 'dashboard') => {
+    stopAllMediaTracks();
+    setIsTimerRunning(false);
+    setSettleModalOpen(false);
+    onNavigate(targetPage);
   };
 
   return (
@@ -335,8 +375,8 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               <ClayBadge variant="mint">IN-BUILT WEBRTC</ClayBadge>
             </div>
             <div style={{ fontSize: '0.8rem', color: '#64748b', display: 'flex', gap: '0.75rem', marginTop: '0.15rem' }}>
-              <span>Instructor: <strong>{activeSession?.teacher_name || 'Priya Patel'}</strong></span>
-              <span>Learner: <strong>{activeSession?.learner_name || currentUser.full_name}</strong></span>
+              <span>Instructor: <strong>{activeSession?.teacher_name || (activeSession?.teacher_id === currentUser.id ? currentUser.full_name : 'Host Instructor')}</strong></span>
+              <span>Learner: <strong>{activeSession?.learner_name || (activeSession?.learner_id === currentUser.id ? currentUser.full_name : 'Open for peer to join')}</strong></span>
               <span>Rate: <strong>{creditRate} TC / hr</strong></span>
             </div>
           </div>
@@ -445,13 +485,13 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                       border: '3px solid rgba(255, 255, 255, 0.8)'
                     }}
                   >
-                    P
+                    {(activeSession?.teacher_name || currentUser.full_name).charAt(0).toUpperCase()}
                   </div>
                   <h3 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#ffffff' }}>
-                    {activeSession?.teacher_name || 'Priya Patel'}
+                    {activeSession?.teacher_name || currentUser.full_name}
                   </h3>
                   <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: '0.25rem' }}>
-                    Senior DBA & Live Instructor • Audio Streaming
+                    {activeSession?.skill_name ? `${activeSession.skill_name} Instruction` : 'Live Peer Teaching'} • Audio Streaming
                   </p>
                   <div style={{ display: 'inline-flex', marginTop: '0.85rem' }}>
                     <ClayBadge variant="mint" style={{ fontSize: '0.7rem' }}>
@@ -570,6 +610,27 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               title="Share Screen"
             >
               <Share2 size={20} />
+            </button>
+
+            {/* End Call / Leave Dock Button */}
+            <button
+              onClick={() => setSettleModalOpen(true)}
+              className="clay-button"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                padding: '0.55rem 1.15rem',
+                borderRadius: '16px',
+                background: '#fee2e2',
+                color: '#dc2626',
+                fontWeight: 700,
+                fontSize: '0.875rem'
+              }}
+              title="End Call & Settle Session"
+            >
+              <PhoneOff size={18} />
+              <span>End Session</span>
             </button>
 
             <ClayButton variant="secondary" onClick={() => setActiveTab(activeTab === 'whiteboard' ? 'chat' : 'whiteboard')}>
@@ -741,27 +802,36 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 <CheckCircle2 size={36} />
               </div>
               <h3 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#0f172a' }}>
-                Double-Entry Settlement Committed!
+                Session Successfully Ended!
               </h3>
               <p style={{ color: '#475569', fontSize: '0.95rem', marginTop: '0.5rem', lineHeight: 1.5 }}>
-                Successfully completed <strong>{settledResult.duration} minutes</strong> of live instruction.
+                Completed <strong>{settledResult.duration} minutes</strong> of live instruction.
                 <br />
-                Transferred <strong>{Number(settledResult.credits || 0).toFixed(2)} TimeCredits</strong> via atomic database transaction.
+                Settled <strong>{Number(settledResult.credits || 0).toFixed(2)} TimeCredits</strong> via atomic database transaction.
               </p>
 
-              <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'center', gap: '0.75rem' }}>
-                <ClayButton variant="primary" onClick={() => onNavigate('wallet')}>
+              <div style={{ marginTop: '1.5rem', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '0.75rem' }}>
+                <ClayButton variant="primary" onClick={() => handleExitClassroom('wallet')}>
                   View Wallet & Ledger
                 </ClayButton>
-                <ClayButton variant="secondary" onClick={() => onNavigate('dashboard')}>
+                <ClayButton variant="secondary" onClick={() => handleExitClassroom('dashboard')}>
                   Return to Dashboard
+                </ClayButton>
+                <ClayButton variant="secondary" onClick={() => handleExitClassroom('sessions')}>
+                  View Sessions
                 </ClayButton>
               </div>
             </div>
           ) : (
             <>
+              {settleError && (
+                <div style={{ padding: '0.85rem 1rem', borderRadius: '14px', background: '#fee2e2', border: '1px solid #f87171', color: '#991b1b', fontSize: '0.875rem' }}>
+                  <strong>Settlement Note:</strong> {settleError}
+                </div>
+              )}
+
               <p style={{ color: '#475569', fontSize: '0.95rem', lineHeight: 1.5 }}>
-                Completing this live classroom session will trigger the <strong>ACID credit settlement</strong>:
+                Completing this live classroom session will finish the call and trigger the <strong>ACID credit settlement</strong>:
               </p>
 
               <div style={{ padding: '1rem', borderRadius: '16px', background: '#f8fafc', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.875rem' }}>
@@ -784,18 +854,24 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 <span>Idempotent row-locked settlement ensures exact, non-duplicated credit transfers.</span>
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
-                <ClayButton variant="secondary" onClick={() => setSettleModalOpen(false)}>
-                  Cancel
+              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <ClayButton variant="secondary" size="sm" onClick={() => handleExitClassroom('dashboard')}>
+                  Exit Without Settling
                 </ClayButton>
-                <ClayButton
-                  variant="mint"
-                  onClick={handleEndAndSettle}
-                  disabled={settling}
-                  icon={<Sparkles size={16} />}
-                >
-                  {settling ? 'Settling Credits...' : 'Confirm & Settle Credits'}
-                </ClayButton>
+
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <ClayButton variant="secondary" onClick={() => setSettleModalOpen(false)}>
+                    Stay in Class
+                  </ClayButton>
+                  <ClayButton
+                    variant="danger"
+                    onClick={handleEndAndSettle}
+                    disabled={settling}
+                    icon={<PhoneOff size={16} />}
+                  >
+                    {settling ? 'Settling Credits...' : 'Confirm & End Session'}
+                  </ClayButton>
+                </div>
               </div>
             </>
           )}
