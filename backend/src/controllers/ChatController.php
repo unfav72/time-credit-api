@@ -107,9 +107,8 @@ class ChatController {
 
         $input = AuthMiddleware::getJsonInput();
         $type = trim($input['signal_type'] ?? $input['type'] ?? '');
-        $payload = is_string($input['payload'] ?? null) 
-            ? $input['payload'] 
-            : json_encode($input['payload'] ?? []);
+        $rawPayload = $input['payload'] ?? null;
+        $payload = is_string($rawPayload) ? $rawPayload : json_encode($rawPayload ?? []);
 
         if (empty($type) || empty($payload)) {
             AuthMiddleware::jsonResponse(['error' => 'Signal type and payload are required.'], 422);
@@ -140,13 +139,18 @@ class ChatController {
 
         $sinceId = (int)($_GET['since_id'] ?? 0);
 
+        // Periodically purge old signals older than 2 hours to keep the table clean
+        try {
+            $pdo->exec("DELETE FROM session_signals WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '2 hours'");
+        } catch (\Throwable $t) {}
+
         // Retrieve signals sent by the OTHER peer (sender_id != me)
         $stmt = $pdo->prepare('
             SELECT id, session_id, sender_id, signal_type, payload, created_at
             FROM session_signals
             WHERE session_id = :sid AND sender_id != :uid AND id > :since_id
             ORDER BY id ASC
-            LIMIT 50
+            LIMIT 150
         ');
         $stmt->execute([
             'sid' => $sessionId,

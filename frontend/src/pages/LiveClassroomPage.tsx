@@ -59,10 +59,21 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
   const [hasRemoteAudio, setHasRemoteAudio] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'connected' | 'failed'>('idle');
+  const [reconnectKey, setReconnectKey] = useState(0);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const lastSignalIdRef = useRef<number>(0);
+
+  const handleManualReconnect = async () => {
+    setConnectionStatus('connecting');
+    setHasRemoteVideo(false);
+    setHasRemoteAudio(false);
+    if (!streamRef.current) {
+      await initializeMedia(true, true);
+    }
+    setReconnectKey(prev => prev + 1);
+  };
 
   // Settlement modal states
   const [settleModalOpen, setSettleModalOpen] = useState(false);
@@ -370,36 +381,76 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
 
     const isHost = activeSession.teacher_id === currentUser.id || activeSession.teacher_name === currentUser.full_name;
 
-    // 1. Initialize PeerConnection with standard Google STUN servers
+    // 1. Initialize PeerConnection with Google STUN + OpenRelay TURN for guaranteed cross-device NAT traversal
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
-      ]
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        {
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+          ],
+          username: 'openrelay',
+          credential: 'openrelay'
+        }
+      ],
+      iceCandidatePoolSize: 10
     });
     pcRef.current = pc;
     setConnectionStatus('connecting');
 
-    // 2. Add local stream tracks to PC if available
+    // Pre-allocate bidirectional audio and video channels so SDP offer/answer always carries video m-lines
+    try {
+      pc.addTransceiver('video', { direction: 'sendrecv' });
+      pc.addTransceiver('audio', { direction: 'sendrecv' });
+    } catch (tErr) {
+      console.warn('WebRTC transceiver pre-allocation:', tErr);
+    }
+
+    // Attach local stream tracks to PC if already available
     if (streamRef.current) {
+      const senders = pc.getSenders();
       streamRef.current.getTracks().forEach(track => {
-        pc.addTrack(track, streamRef.current!);
+        const sender = senders.find(s => s.track && s.track.kind === track.kind);
+        if (sender) {
+          sender.replaceTrack(track).catch(console.warn);
+        } else {
+          try { pc.addTrack(track, streamRef.current!); } catch {}
+        }
       });
     }
 
-    // 3. Receive remote stream tracks
+    // Receive remote stream tracks
     pc.ontrack = (event) => {
       if (!isMounted) return;
-      console.log('[WebRTC P2P] Inbound track received:', event.track.kind);
-      if (!remoteStreamRef.current) {
-        remoteStreamRef.current = new MediaStream();
-      }
-      remoteStreamRef.current.addTrack(event.track);
+      console.log('[WebRTC P2P] Inbound track received:', event.track.kind, event.streams);
 
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStreamRef.current;
-        remoteVideoRef.current.play().catch(e => console.warn('Remote video play error:', e));
+      let stream: MediaStream | null = null;
+      if (event.streams && event.streams[0]) {
+        stream = event.streams[0];
+      } else {
+        if (!remoteStreamRef.current) remoteStreamRef.current = new MediaStream();
+        remoteStreamRef.current.addTrack(event.track);
+        stream = remoteStreamRef.current;
+      }
+      remoteStreamRef.current = stream;
+
+      if (remoteVideoRef.current && stream) {
+        remoteVideoRef.current.srcObject = stream;
+        const playPromise = remoteVideoRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(err => {
+            console.warn('Autoplay blocked with audio, falling back to muted play:', err);
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.muted = true;
+              remoteVideoRef.current.play().catch(console.warn);
+            }
+          });
+        }
       }
 
       if (event.track.kind === 'video') {
@@ -411,16 +462,20 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       setConnectionStatus('connected');
     };
 
-    // 4. Send local ICE candidates to peer via signaling API
+    // Send local ICE candidates to peer
     pc.onicecandidate = (event) => {
       if (event.candidate && activeSession) {
-        api.sendSignal(activeSession.id, 'ice-candidate', event.candidate.toJSON()).catch(e => {
-          console.warn('[WebRTC] ICE candidate signal error:', e);
-        });
+        const candData = {
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+          usernameFragment: event.candidate.usernameFragment
+        };
+        api.sendSignal(activeSession.id, 'ice-candidate', candData).catch(console.warn);
       }
     };
 
-    // 5. Track state changes
+    // Connection state tracker
     pc.onconnectionstatechange = () => {
       if (!isMounted) return;
       console.log('[WebRTC P2P] Connection state:', pc.connectionState);
@@ -433,10 +488,40 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       }
     };
 
-    // 6. Broadcast join presence to session
+    const sendOffer = async () => {
+      if (!pcRef.current) return;
+      try {
+        console.log('[WebRTC] Creating and sending offer...');
+        const offer = await pcRef.current.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
+        await pcRef.current.setLocalDescription(offer);
+        const offerData = { type: offer.type, sdp: offer.sdp };
+        await api.sendSignal(activeSession.id, 'offer', offerData);
+      } catch (err) {
+        console.warn('Error creating WebRTC offer:', err);
+      }
+    };
+
+    // Broadcast presence
     api.sendSignal(activeSession.id, 'join', { user_id: currentUser.id, role: isHost ? 'teacher' : 'learner' }).catch(() => {});
 
-    // 7. Polling loop for WebRTC signals (Offers, Answers, ICE candidates)
+    // Proactive initial negotiation trigger
+    let initialTimer: any = null;
+    if (isHost) {
+      initialTimer = setTimeout(() => {
+        if (isMounted) sendOffer();
+      }, 700);
+    } else {
+      initialTimer = setTimeout(() => {
+        if (isMounted) {
+          api.sendSignal(activeSession.id, 'request-offer', { user_id: currentUser.id }).catch(() => {});
+        }
+      }, 900);
+    }
+
+    // Polling loop for WebRTC signals (Offers, Answers, ICE candidates)
     const pollSignals = async () => {
       if (!isMounted || !pcRef.current) return;
       try {
@@ -448,53 +533,53 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             lastSignalIdRef.current = sig.id;
           }
 
-          // Ignore own signals
           if (sig.sender_id === currentUser.id) continue;
 
           let payload: any = sig.payload;
-          if (typeof payload === 'string') {
-            try { payload = JSON.parse(payload); } catch {}
+          while (typeof payload === 'string') {
+            try {
+              payload = JSON.parse(payload);
+            } catch {
+              break;
+            }
           }
 
-          if (sig.signal_type === 'join') {
-            // When peer joins: if we are Host, create & dispatch WebRTC offer
+          if (sig.signal_type === 'join' || sig.signal_type === 'request-offer') {
             if (isHost && pcRef.current) {
-              console.log('[WebRTC] Peer joined room; Host creating offer...');
-              const offer = await pcRef.current.createOffer();
-              await pcRef.current.setLocalDescription(offer);
-              await api.sendSignal(activeSession.id, 'offer', offer);
+              await sendOffer();
             }
           } else if (sig.signal_type === 'offer') {
-            // When learner receives Host's offer, create Answer
-            if (!isHost && pcRef.current) {
+            if (!isHost && pcRef.current && payload?.sdp) {
               console.log('[WebRTC] Received offer from host; setting remote description and answering...');
-              await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload as any));
+              await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload));
 
-              // Drain any queued early ICE candidates
               while (queuedCandidates.length > 0) {
                 const c = queuedCandidates.shift();
                 try {
-                  await pcRef.current.addIceCandidate(new RTCIceCandidate(c as any));
+                  await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
                 } catch (iceErr) {
                   console.warn('ICE drain error:', iceErr);
                 }
               }
 
-              const answer = await pcRef.current.createAnswer();
+              const answer = await pcRef.current.createAnswer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true
+              });
               await pcRef.current.setLocalDescription(answer);
-              await api.sendSignal(activeSession.id, 'answer', answer);
+              const answerData = { type: answer.type, sdp: answer.sdp };
+              await api.sendSignal(activeSession.id, 'answer', answerData);
             }
           } else if (sig.signal_type === 'answer') {
-            // When Host receives Learner's answer
-            if (isHost && pcRef.current) {
-              console.log('[WebRTC] Host received answer from learner; setting remote description...');
+            if (isHost && pcRef.current && payload?.sdp) {
+              console.log('[WebRTC] Host received answer from learner...');
               if (pcRef.current.signalingState !== 'stable') {
-                await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload as any));
+                await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload));
 
                 while (queuedCandidates.length > 0) {
                   const c = queuedCandidates.shift();
                   try {
-                    await pcRef.current.addIceCandidate(new RTCIceCandidate(c as any));
+                    await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
                   } catch (iceErr) {
                     console.warn('ICE drain error:', iceErr);
                   }
@@ -502,14 +587,16 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               }
             }
           } else if (sig.signal_type === 'ice-candidate') {
-            if (pcRef.current && pcRef.current.remoteDescription && pcRef.current.remoteDescription.type) {
-              try {
-                await pcRef.current.addIceCandidate(new RTCIceCandidate(payload as any));
-              } catch (iceErr) {
-                console.warn('Failed to add received ICE candidate:', iceErr);
+            if (payload && (payload.candidate || typeof payload === 'string')) {
+              if (pcRef.current && pcRef.current.remoteDescription && pcRef.current.remoteDescription.type) {
+                try {
+                  await pcRef.current.addIceCandidate(new RTCIceCandidate(payload));
+                } catch (iceErr) {
+                  console.warn('Failed to add received ICE candidate:', iceErr);
+                }
+              } else {
+                queuedCandidates.push(payload);
               }
-            } else {
-              queuedCandidates.push(payload);
             }
           }
         }
@@ -518,12 +605,26 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       }
     };
 
-    const signalInterval = setInterval(pollSignals, 1500);
+    const signalInterval = setInterval(pollSignals, 1200);
     pollSignals();
+
+    // Health-check auto-ping if not connected after initial period
+    const retryInterval = setInterval(() => {
+      if (!isMounted || !pcRef.current) return;
+      if (pcRef.current.connectionState !== 'connected' && connectionStatus !== 'connected') {
+        if (!isHost) {
+          api.sendSignal(activeSession.id, 'request-offer', { user_id: currentUser.id }).catch(() => {});
+        } else {
+          sendOffer();
+        }
+      }
+    }, 4500);
 
     return () => {
       isMounted = false;
+      if (initialTimer) clearTimeout(initialTimer);
       clearInterval(signalInterval);
+      clearInterval(retryInterval);
       if (pcRef.current) {
         try { pcRef.current.close(); } catch {}
         pcRef.current = null;
@@ -536,7 +637,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       setHasRemoteAudio(false);
       setConnectionStatus('idle');
     };
-  }, [activeSession?.id, activeSession?.status]);
+  }, [activeSession?.id, activeSession?.status, reconnectKey]);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const elapsedSecsRemainder = elapsedSeconds % 60;
@@ -1038,7 +1139,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                     <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: '0.25rem' }}>
                       {remoteRoleLabel} • {activeSession.skill_name ? `${activeSession.skill_name} Instruction` : 'Live Peer Teaching'}
                     </p>
-                    <div style={{ display: 'inline-flex', marginTop: '0.85rem' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.65rem', marginTop: '0.85rem' }}>
                       <ClayBadge
                         variant={connectionStatus === 'connected' ? 'mint' : connectionStatus === 'connecting' ? 'lavender' : 'amber'}
                         style={{ fontSize: '0.72rem', padding: '0.25rem 0.65rem' }}
@@ -1049,6 +1150,27 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                           ? '⏳ CONNECTING P2P WEBRTC LINK...'
                           : '○ WAITING FOR PEER TO ENTER ROOM'}
                       </ClayBadge>
+
+                      <button
+                        onClick={handleManualReconnect}
+                        style={{
+                          background: 'rgba(99, 102, 241, 0.25)',
+                          border: '1px solid rgba(99, 102, 241, 0.6)',
+                          color: '#ffffff',
+                          borderRadius: '12px',
+                          padding: '0.35rem 0.85rem',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.35rem',
+                          boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+                        }}
+                        title="Click to force re-negotiate video link between devices"
+                      >
+                        <span>🔄 Connect / Retry Stream</span>
+                      </button>
                     </div>
                   </div>
                 )}
