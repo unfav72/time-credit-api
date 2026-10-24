@@ -53,9 +53,14 @@ class Database {
                     $pdo->exec("
                         ALTER TABLE notifications ADD COLUMN IF NOT EXISTS notification_type VARCHAR(50) DEFAULT 'SYSTEM';
                         ALTER TABLE notifications ADD COLUMN IF NOT EXISTS action_url VARCHAR(255) DEFAULT NULL;
+                        SELECT setval('users_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM users), 1));
+                        SELECT setval('credit_accounts_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_accounts), 1));
+                        SELECT setval('credit_transactions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_transactions), 1));
+                        SELECT setval('credit_ledger_entries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_ledger_entries), 1));
+                        SELECT setval('notifications_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM notifications), 1));
                     ");
                 } catch (\Throwable $e) {
-                    // Ignore if table does not exist yet
+                    // Ignore if tables or sequences do not exist yet
                 }
             } elseif ($driver === 'mysql') {
                 $pdo->exec("SET time_zone = '+00:00'");

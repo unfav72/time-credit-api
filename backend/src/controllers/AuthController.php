@@ -69,27 +69,26 @@ class AuthController {
                 'bio' => $bio ?: 'Skill-exchange enthusiast on TimeCredit Live.',
             ]);
 
-            // Ensure credit account exists
-            $accCheck = $pdo->prepare('SELECT id FROM credit_accounts WHERE user_id = :user_id');
+            // Check if credit account exists (or was automatically created by PostgreSQL trigger trg_after_user_insert)
+            $accCheck = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :user_id');
             $accCheck->execute(['user_id' => $userId]);
             $accRow = $accCheck->fetch();
+
             if (!$accRow) {
+                // Trigger didn't exist or didn't run: create wallet and bonus transaction manually
                 $accId = Database::insertAndGetId($pdo, 'INSERT INTO credit_accounts (user_id, balance) VALUES (:user_id, 2.00)', ['user_id' => $userId]);
-            } else {
-                $accId = (int)$accRow['id'];
+
+                $txnKey = 'SIGNUP_BONUS_' . $userId . '_' . time();
+                $txnId = Database::insertAndGetId($pdo, "
+                    INSERT INTO credit_transactions (idempotency_key, transaction_type, status)
+                    VALUES (:key, 'SIGNUP_BONUS', 'COMMITTED')
+                ", ['key' => $txnKey]);
+
+                $pdo->prepare("
+                    INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
+                    VALUES (:tid, :aid, 'CREDIT', 2.00)
+                ")->execute(['tid' => $txnId, 'aid' => $accId]);
             }
-
-            // Record welcome bonus transaction
-            $txnKey = 'SIGNUP_BONUS_' . $userId . '_' . time();
-            $txnId = Database::insertAndGetId($pdo, "
-                INSERT INTO credit_transactions (idempotency_key, transaction_type, status)
-                VALUES (:key, 'SIGNUP_BONUS', 'COMMITTED')
-            ", ['key' => $txnKey]);
-
-            $pdo->prepare("
-                INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
-                VALUES (:tid, :aid, 'CREDIT', 2.00)
-            ")->execute(['tid' => $txnId, 'aid' => $accId]);
 
             // Commit core user and wallet ledger transaction FIRST
             $pdo->commit();
@@ -127,8 +126,15 @@ class AuthController {
                 'token' => $token
             ], 201);
         } catch (\Throwable $e) {
-            $pdo->rollBack();
-            AuthMiddleware::jsonResponse(['error' => 'Registration failed: ' . $e->getMessage()], 500);
+            $origError = $e->getMessage();
+            try {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+            } catch (\Throwable $rbErr) {
+                // Ignore rollback failure to preserve original error
+            }
+            AuthMiddleware::jsonResponse(['error' => 'Registration failed: ' . $origError], 500);
         }
     }
 
