@@ -294,6 +294,18 @@ try {
                 $report['host_testers_deleted'] = $count;
             }
 
+            $pdo->exec("
+                DELETE FROM sessions WHERE request_id IN (
+                    SELECT sr.id FROM service_requests sr
+                    JOIN service_offers so ON sr.offer_id = so.id
+                    WHERE so.title ILIKE 'gaming'
+                )
+            ");
+            $pdo->exec("
+                DELETE FROM service_requests WHERE offer_id IN (
+                    SELECT id FROM service_offers WHERE title ILIKE 'gaming'
+                )
+            ");
             $offCount = $pdo->exec("DELETE FROM service_offers WHERE title ILIKE 'gaming'");
             $report['test_offers_deleted'] = $offCount;
 
