@@ -685,3 +685,4 @@ SELECT setval('credit_ledger_entries_id_seq', COALESCE((SELECT MAX(id) FROM cred
 SELECT setval('reviews_id_seq', COALESCE((SELECT MAX(id) FROM reviews), 1));
 SELECT setval('notifications_id_seq', COALESCE((SELECT MAX(id) FROM notifications), 1));
 SELECT setval('saved_queries_id_seq', COALESCE((SELECT MAX(id) FROM saved_queries), 1));
+SELECT setval('audit_logs_id_seq', COALESCE((SELECT MAX(id) FROM audit_logs), 1));

@@ -132,7 +132,7 @@ try {
         AuthController::login();
     } elseif ($requestUri === '/api/v1/auth/logout' && $method === 'POST') {
         AuthController::logout();
-    } elseif ($requestUri === '/api/v1/me' && $method === 'GET') {
+    } elseif (($requestUri === '/api/v1/me' || $requestUri === '/api/v1/auth/me') && $method === 'GET') {
         AuthController::me();
     } elseif ($requestUri === '/api/v1/auth/profile' && $method === 'PUT') {
         AuthController::updateProfile();

@@ -95,7 +95,12 @@ try {
         }
 
         echo "  [APPLYING] {$filename} ... ";
-        $sql = file_get_contents($file);
+        if ($driver !== 'pgsql' && str_contains($filename, 'sequences')) {
+            $recordStmt = $pdo->prepare("INSERT INTO schema_migrations (migration) VALUES (:mig)");
+            $recordStmt->execute(['mig' => $filename]);
+            echo "\033[33mSKIPPED (PostgreSQL specific)\033[0m\n";
+            continue;
+        }
 
         // Execute migration
         $pdo->exec($sql);

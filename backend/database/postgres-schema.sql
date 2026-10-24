@@ -573,3 +573,24 @@ BEGIN
     p_transferred_credits := v_calculated_credits;
 END;
 $$;
+
+-- SEQUENCE SYNCHRONIZATION
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'users_id_seq') THEN
+        PERFORM setval('users_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM users), 1));
+        PERFORM setval('skill_categories_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM skill_categories), 1));
+        PERFORM setval('skills_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM skills), 1));
+        PERFORM setval('user_skills_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM user_skills), 1));
+        PERFORM setval('service_offers_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM service_offers), 1));
+        PERFORM setval('service_requests_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM service_requests), 1));
+        PERFORM setval('sessions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM sessions), 1));
+        PERFORM setval('credit_accounts_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_accounts), 1));
+        PERFORM setval('credit_transactions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_transactions), 1));
+        PERFORM setval('credit_ledger_entries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_ledger_entries), 1));
+        PERFORM setval('reviews_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM reviews), 1));
+        PERFORM setval('notifications_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM notifications), 1));
+        PERFORM setval('saved_queries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM saved_queries), 1));
+        PERFORM setval('audit_logs_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM audit_logs), 1));
+    END IF;
+END $$;

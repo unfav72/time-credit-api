@@ -42,7 +42,19 @@ class AuthController {
             return;
         }
 
+        // Hash password securely with PHP bcrypt
+        $passwordHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 10]);
+
         $pdo = Database::getCoreConnection();
+
+        // Safety: Ensure clean transaction state (reset any aborted transaction block)
+        try {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            } else {
+                $pdo->exec('ROLLBACK');
+            }
+        } catch (\Throwable $e) {}
 
         // Check if email already exists
         $stmt = $pdo->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
@@ -51,9 +63,6 @@ class AuthController {
             AuthMiddleware::jsonResponse(['error' => 'An account with this email address already exists.'], 409);
             return;
         }
-
-        // Hash password securely with PHP bcrypt
-        $passwordHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 10]);
 
         $pdo->beginTransaction();
         try {
