@@ -667,6 +667,21 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 queuedCandidates.push(payload);
               }
             }
+          } else if (sig.signal_type === 'session-ended') {
+            console.log('[WebRTC] Peer notified that session has completed and settled:', payload);
+            const creds = Number(payload?.credits ?? accruedCredits);
+            const dur = Number(payload?.duration ?? elapsedMinutes);
+            setSettledResult({ credits: creds, duration: dur });
+            setCompletedSessionId(activeSession.id);
+            setSettleModalOpen(true);
+            stopAllMediaTracks();
+            setIsTimerRunning(false);
+            learnerJoinedAtRef.current = null;
+            confetti({
+              particleCount: 90,
+              spread: 70,
+              origin: { y: 0.6 }
+            });
           }
         }
       } catch (err) {
@@ -723,6 +738,13 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         const res = await api.completeSession(activeSession.id, elapsedMinutes);
         setSettledResult({ credits: res.transferredCredits, duration: elapsedMinutes });
         setCompletedSessionId(activeSession.id);
+
+        // Notify peer via WebRTC signal that session ended and credits were settled!
+        api.sendSignal(activeSession.id, 'session-ended', {
+          ended_by: currentUser.id,
+          credits: res.transferredCredits,
+          duration: elapsedMinutes
+        }).catch(console.warn);
       } else {
         setSettledResult({ credits: accruedCredits, duration: elapsedMinutes });
       }
@@ -1035,6 +1057,18 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     activeSession.teacher_name === currentUser.full_name
   ));
 
+  const isLearner = Boolean(activeSession && (
+    activeSession.learner_id === currentUser.id ||
+    activeSession.learner_name === currentUser.full_name ||
+    (!isHost && activeSession.teacher_id !== currentUser.id)
+  ));
+
+  const isSoloSession = Boolean(activeSession && (
+    !activeSession.learner_id ||
+    activeSession.teacher_id === activeSession.learner_id ||
+    activeSession.learner_name?.toLowerCase().includes('waiting')
+  ));
+
   const remoteUserName = isHost
     ? (activeSession?.learner_name || 'Student / Peer')
     : (activeSession?.teacher_name || 'Teaching Staff');
@@ -1126,19 +1160,53 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               fontSize: '0.95rem',
               boxShadow: 'var(--clay-shadow-btn)'
             }}
-            title="Accruing in real-time. 1 Hour = 1.00 TimeCredit"
+            title={isHost ? "Earnings accruing in real-time. Settled to your wallet when student ends session." : "Cost accruing in real-time. 1 Hour = 1.00 TimeCredit"}
           >
             <Coins size={16} />
             <span>+{Number(accruedCredits || 0).toFixed(2)} TC</span>
           </div>
 
-          <ClayButton
-            variant="danger"
-            onClick={() => setSettleModalOpen(true)}
-            icon={<PhoneOff size={15} />}
-          >
-            End Session
-          </ClayButton>
+          {/* Action button based on role: Learner ends & settles, Teacher leaves or closes solo */}
+          {isLearner ? (
+            <ClayButton
+              variant="danger"
+              onClick={() => {
+                setSettledResult(null);
+                setSettleError(null);
+                setSettleModalOpen(true);
+              }}
+              icon={<PhoneOff size={15} />}
+            >
+              End Session & Settle
+            </ClayButton>
+          ) : isSoloSession ? (
+            <ClayButton
+              variant="secondary"
+              onClick={() => {
+                setSettledResult(null);
+                setSettleError(null);
+                setSettleModalOpen(true);
+              }}
+              icon={<PhoneOff size={15} />}
+            >
+              Close Broadcast
+            </ClayButton>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <ClayBadge variant="lavender">Mentoring Student</ClayBadge>
+              <ClayButton
+                variant="secondary"
+                onClick={() => {
+                  if (confirm('Leave classroom? The active session will conclude when the student ends it, and settled TimeCredits will transfer to your wallet.')) {
+                    handleExitClassroom('dashboard');
+                  }
+                }}
+                icon={<PhoneOff size={15} />}
+              >
+                Leave Classroom
+              </ClayButton>
+            </div>
+          )}
         </div>
       </ClayCard>
 
@@ -1391,26 +1459,80 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               <Share2 size={20} />
             </button>
 
-            {/* End Call / Leave Dock Button */}
-            <button
-              onClick={() => setSettleModalOpen(true)}
-              className="clay-button"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.45rem',
-                padding: '0.55rem 1.15rem',
-                borderRadius: '16px',
-                background: '#fee2e2',
-                color: '#dc2626',
-                fontWeight: 700,
-                fontSize: '0.875rem'
-              }}
-              title="End Call & Settle Session"
-            >
-              <PhoneOff size={18} />
-              <span>End Session</span>
-            </button>
+            {/* End Call / Leave Dock Button based on role */}
+            {isLearner ? (
+              <button
+                onClick={() => {
+                  setSettledResult(null);
+                  setSettleError(null);
+                  setSettleModalOpen(true);
+                }}
+                className="clay-button"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.45rem',
+                  padding: '0.55rem 1.15rem',
+                  borderRadius: '16px',
+                  background: '#fee2e2',
+                  color: '#dc2626',
+                  fontWeight: 700,
+                  fontSize: '0.875rem'
+                }}
+                title="End Call & Settle Session"
+              >
+                <PhoneOff size={18} />
+                <span>End Session & Settle</span>
+              </button>
+            ) : isSoloSession ? (
+              <button
+                onClick={() => {
+                  setSettledResult(null);
+                  setSettleError(null);
+                  setSettleModalOpen(true);
+                }}
+                className="clay-button"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.45rem',
+                  padding: '0.55rem 1.15rem',
+                  borderRadius: '16px',
+                  background: '#f1f5f9',
+                  color: '#475569',
+                  fontWeight: 700,
+                  fontSize: '0.875rem'
+                }}
+                title="Close Broadcast"
+              >
+                <PhoneOff size={18} />
+                <span>Close Broadcast</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  if (confirm('Leave classroom? The active session will conclude when the student ends it, and settled TimeCredits will transfer to your wallet.')) {
+                    handleExitClassroom('dashboard');
+                  }
+                }}
+                className="clay-button"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.45rem',
+                  padding: '0.55rem 1.15rem',
+                  borderRadius: '16px',
+                  background: '#f1f5f9',
+                  color: '#475569',
+                  fontWeight: 700,
+                  fontSize: '0.875rem'
+                }}
+                title="Leave classroom and return to dashboard"
+              >
+                <PhoneOff size={18} />
+                <span>Leave Classroom</span>
+              </button>
+            )}
 
             <ClayButton variant="secondary" onClick={() => setActiveTab(activeTab === 'whiteboard' ? 'chat' : 'whiteboard')}>
               {activeTab === 'whiteboard' ? 'Open Classroom Chat' : 'Open Interactive Whiteboard'}
@@ -1607,7 +1729,11 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       <ClayModal
         isOpen={settleModalOpen}
         onClose={() => setSettleModalOpen(false)}
-        title="Complete Session & Settle TimeCredits"
+        title={
+          settledResult
+            ? (isHost && !isLearner ? "🎉 Class Completed by Student!" : "Session Successfully Ended & Settled!")
+            : (isHost && isSoloSession ? "Close Online Broadcast" : (isHost ? "Instructor Classroom View" : "Complete Session & Settle TimeCredits"))
+        }
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
           {settledResult ? (
@@ -1616,10 +1742,13 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 <CheckCircle2 size={32} />
               </div>
               <h3 style={{ fontSize: '1.35rem', fontWeight: 800, color: '#0f172a' }}>
-                Session Successfully Ended!
+                {isHost && !isLearner ? "Class Completed by Student!" : "Session Successfully Ended!"}
               </h3>
               <p style={{ color: '#475569', fontSize: '0.875rem', marginTop: '0.25rem', lineHeight: 1.5 }}>
-                Completed <strong>{settledResult.duration} minutes</strong> • Settled <strong>{Number(settledResult.credits || 0).toFixed(2)} TC</strong> via atomic transaction.
+                {isHost && !isLearner
+                  ? <>Completed <strong>{settledResult.duration} minutes</strong> • You received <strong>+{Number(settledResult.credits || 0).toFixed(2)} TC</strong> transferred directly to your TimeCredit wallet.</>
+                  : <>Completed <strong>{settledResult.duration} minutes</strong> • Settled <strong>{Number(settledResult.credits || 0).toFixed(2)} TC</strong> to instructor <strong>{remoteUserName}</strong> via atomic transaction.</>
+                }
               </p>
 
               {/* POST-SESSION REVIEW OPTION */}
@@ -1632,7 +1761,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                   <ClayBadge variant="lavender">Post-Session Review</ClayBadge>
                 </div>
                 <p style={{ fontSize: '0.8rem', color: '#64748b', margin: '0 0 0.75rem' }}>
-                  Rate the work and mentorship of <strong>{remoteUserName}</strong>. Your feedback is stored in PostgreSQL and displayed on their public instructor profile.
+                  Rate the work and collaboration of <strong>{remoteUserName}</strong>. Your feedback is stored in PostgreSQL and displayed on their public instructor profile.
                 </p>
 
                 {reviewSubmitted ? (
@@ -1708,18 +1837,81 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
 
               {/* Exit navigation options */}
               <div style={{ marginTop: '1.25rem', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '0.65rem' }}>
+                <ClayButton variant="primary" onClick={() => handleExitClassroom('wallet')}>
+                  View Wallet & Ledger
+                </ClayButton>
                 <ClayButton variant="secondary" onClick={() => handleExitClassroom('classroom')}>
                   Return to Empty Classroom
                 </ClayButton>
                 <ClayButton variant="secondary" onClick={() => handleExitClassroom('dashboard')}>
                   Return to Dashboard
                 </ClayButton>
-                <ClayButton variant="primary" onClick={() => handleExitClassroom('wallet')}>
-                  View Wallet & Ledger
+              </div>
+            </div>
+          ) : isHost && !isSoloSession ? (
+            /* Teacher view during active class with student */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div style={{ padding: '1rem', borderRadius: '16px', background: '#f8fafc', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '0.65rem', fontSize: '0.875rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#64748b' }}>Active Student:</span>
+                  <strong>{remoteUserName}</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#64748b' }}>Class Elapsed Duration:</span>
+                  <strong>{elapsedMinutes} minutes</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#64748b' }}>Your Credit Earnings Rate:</span>
+                  <strong>{Number(creditRate || 0).toFixed(2)} TC / hr</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #cbd5e1', paddingTop: '0.5rem', fontSize: '1rem' }}>
+                  <span style={{ fontWeight: 700 }}>Accumulated Earnings:</span>
+                  <strong style={{ color: '#059669' }}>+{Number(accruedCredits || 0).toFixed(2)} TC</strong>
+                </div>
+              </div>
+
+              <p style={{ color: '#475569', fontSize: '0.875rem', lineHeight: 1.5, margin: 0 }}>
+                💡 <strong>Instructor Note:</strong> The student will click <strong>End Session</strong> when they are finished to conclude the call and trigger the automated credit settlement into your wallet. You can safely return to the dashboard at any time.
+              </p>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <ClayButton variant="secondary" onClick={() => setSettleModalOpen(false)}>
+                  Stay in Class
+                </ClayButton>
+                <ClayButton variant="primary" onClick={() => handleExitClassroom('dashboard')}>
+                  Exit to Dashboard
+                </ClayButton>
+              </div>
+            </div>
+          ) : isHost && isSoloSession ? (
+            /* Teacher view during solo broadcast */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <p style={{ color: '#475569', fontSize: '0.925rem', lineHeight: 1.5, margin: 0 }}>
+                No student has joined this broadcast yet. Closing this broadcast will return the classroom to an empty idle state and remove the listing from the browse catalog:
+              </p>
+
+              <div style={{ padding: '1rem', borderRadius: '16px', background: '#f8fafc', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.875rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#64748b' }}>Broadcast Duration:</span>
+                  <strong>{elapsedMinutes} minutes</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: '#64748b' }}>Settlement Amount:</span>
+                  <strong>0.00 TC (Solo Broadcast)</strong>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <ClayButton variant="secondary" onClick={() => setSettleModalOpen(false)}>
+                  Stay in Broadcast
+                </ClayButton>
+                <ClayButton variant="danger" onClick={handleEndAndSettle} disabled={settling} icon={<PhoneOff size={16} />}>
+                  {settling ? 'Closing...' : 'Confirm & Close Broadcast'}
                 </ClayButton>
               </div>
             </div>
           ) : (
+            /* Learner settlement view */
             <>
               {settleError && (
                 <div style={{ padding: '0.85rem 1rem', borderRadius: '14px', background: '#fee2e2', border: '1px solid #f87171', color: '#991b1b', fontSize: '0.875rem' }}>
@@ -1728,7 +1920,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               )}
 
               <p style={{ color: '#475569', fontSize: '0.95rem', lineHeight: 1.5 }}>
-                Completing this live classroom session will finish the call and trigger the <strong>ACID credit settlement</strong>:
+                Completing this live classroom session will finish the call and trigger the <strong>ACID credit settlement</strong> transfer to your instructor <strong>{remoteUserName}</strong>:
               </p>
 
               <div style={{ padding: '1rem', borderRadius: '16px', background: '#f8fafc', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.875rem' }}>

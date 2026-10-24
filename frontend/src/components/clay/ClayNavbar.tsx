@@ -13,7 +13,8 @@ import {
   PlusCircle,
   Video,
   LogIn,
-  MessageSquare
+  MessageSquare,
+  Bell
 } from 'lucide-react';
 import { ClayBadge } from './ClayBadge';
 import { ClayButton } from './ClayButton';
@@ -26,6 +27,8 @@ interface ClayNavbarProps {
   onToggleSidebar: () => void;
   onOpenTopUp: () => void;
   onLogout: () => void;
+  unreadCount?: number;
+  pendingFriendCount?: number;
 }
 
 export const ClayNavbar: React.FC<ClayNavbarProps> = ({
@@ -34,7 +37,9 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
   currentPage,
   onToggleSidebar,
   onOpenTopUp,
-  onLogout
+  onLogout,
+  unreadCount = 0,
+  pendingFriendCount = 0
 }) => {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -157,14 +162,37 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
         </ClayButton>
 
         {currentUser && (
-          <ClayButton
-            size="sm"
-            variant={currentPage === 'chat' ? 'primary' : 'secondary'}
-            onClick={() => onNavigate('chat')}
-            icon={<MessageSquare size={15} />}
-          >
-            Chat & Friends
-          </ClayButton>
+          <div style={{ position: 'relative', display: 'inline-flex' }}>
+            <ClayButton
+              size="sm"
+              variant={currentPage === 'chat' ? 'primary' : 'secondary'}
+              onClick={() => onNavigate('chat')}
+              icon={<MessageSquare size={15} />}
+            >
+              Chat & Friends
+            </ClayButton>
+            {pendingFriendCount > 0 && (
+              <span
+                style={{
+                  position: 'absolute',
+                  top: '-5px',
+                  right: '-6px',
+                  background: '#ef4444',
+                  color: '#ffffff',
+                  fontSize: '0.65rem',
+                  fontWeight: 800,
+                  borderRadius: '10px',
+                  padding: '1px 6px',
+                  boxShadow: '0 2px 6px rgba(239, 68, 68, 0.45)',
+                  border: '2px solid #ffffff',
+                  lineHeight: 1.2
+                }}
+                title={`${pendingFriendCount} pending friend request${pendingFriendCount > 1 ? 's' : ''}`}
+              >
+                {pendingFriendCount}
+              </span>
+            )}
+          </div>
         )}
 
         {/* Top Up TimeCredits Button */}
@@ -225,6 +253,50 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
 
         {currentUser ? (
           <>
+            {/* Notification Bell with Unread Badge */}
+            <button
+              onClick={() => onNavigate('notifications')}
+              style={{
+                position: 'relative',
+                background: 'var(--clay-surface)',
+                border: 'none',
+                borderRadius: '14px',
+                width: '38px',
+                height: '38px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                boxShadow: 'var(--clay-shadow-btn)',
+                color: currentPage === 'notifications' ? '#6366f1' : '#475569',
+              }}
+              title={unreadCount > 0 ? `${unreadCount} unread notification${unreadCount > 1 ? 's' : ''}` : "Notifications"}
+            >
+              <Bell size={18} />
+              {unreadCount > 0 && (
+                <span
+                  style={{
+                    position: 'absolute',
+                    top: '-3px',
+                    right: '-3px',
+                    background: '#ef4444',
+                    color: '#ffffff',
+                    fontSize: '0.65rem',
+                    fontWeight: 800,
+                    borderRadius: '10px',
+                    padding: '1px 5px',
+                    minWidth: '16px',
+                    textAlign: 'center',
+                    boxShadow: '0 2px 5px rgba(239, 68, 68, 0.5)',
+                    border: '2px solid #ffffff',
+                    lineHeight: 1.2
+                  }}
+                >
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </button>
+
             {/* Credit Balance Pill */}
             <div
               onClick={() => onNavigate('wallet')}

@@ -25,6 +25,8 @@ interface ClaySidebarProps {
   onClose: () => void;
   role: 'member' | 'admin';
   onOpenTopUp: () => void;
+  unreadCount?: number;
+  pendingFriendCount?: number;
 }
 
 export const ClaySidebar: React.FC<ClaySidebarProps> = ({
@@ -33,7 +35,9 @@ export const ClaySidebar: React.FC<ClaySidebarProps> = ({
   isOpen,
   onClose,
   role,
-  onOpenTopUp
+  onOpenTopUp,
+  unreadCount = 0,
+  pendingFriendCount = 0
 }) => {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
@@ -43,10 +47,10 @@ export const ClaySidebar: React.FC<ClaySidebarProps> = ({
     { id: 'requests', label: 'Service Requests', icon: <Inbox size={18} /> },
     { id: 'sessions', label: 'My Sessions', icon: <CalendarCheck size={18} /> },
     { id: 'classroom', label: 'Live Classroom', icon: <Video size={18} />, highlight: true },
-    { id: 'chat', label: 'Peer Chat & Friends', icon: <MessageSquare size={18} /> },
+    { id: 'chat', label: 'Peer Chat & Friends', icon: <MessageSquare size={18} />, badge: pendingFriendCount > 0 ? `${pendingFriendCount} NEW` : null, badgeVariant: 'rose' },
     { id: 'wallet', label: 'TimeCredit Wallet', icon: <Wallet size={18} /> },
     { id: 'reports', label: 'DBMS Analytics', icon: <BarChart3 size={18} /> },
-    { id: 'notifications', label: 'Notifications', icon: <Bell size={18} /> },
+    { id: 'notifications', label: 'Notifications', icon: <Bell size={18} />, badge: unreadCount > 0 ? String(unreadCount) : null, badgeVariant: 'lavender' },
     { id: 'settings', label: 'Settings', icon: <Settings size={18} /> },
   ];
 
@@ -166,14 +170,24 @@ export const ClaySidebar: React.FC<ClaySidebarProps> = ({
                   <span>{item.label}</span>
                 </div>
 
-                {item.highlight && !isActive && (
-                  <span
-                    className="clay-badge clay-badge-mint"
-                    style={{ fontSize: '0.65rem', padding: '0.15rem 0.45rem' }}
-                  >
-                    IN-BUILT
-                  </span>
-                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  {(item as any).badge && !isActive && (
+                    <span
+                      className={`clay-badge clay-badge-${(item as any).badgeVariant || 'mint'}`}
+                      style={{ fontSize: '0.65rem', padding: '0.15rem 0.45rem', fontWeight: 700 }}
+                    >
+                      {(item as any).badge}
+                    </span>
+                  )}
+                  {item.highlight && !isActive && !(item as any).badge && (
+                    <span
+                      className="clay-badge clay-badge-mint"
+                      style={{ fontSize: '0.65rem', padding: '0.15rem 0.45rem' }}
+                    >
+                      IN-BUILT
+                    </span>
+                  )}
+                </div>
               </button>
             );
           })}

@@ -246,7 +246,7 @@ class SessionController {
 
         // Check if session exists
         $stmt = $pdo->prepare('
-            SELECT s.*, so.credit_rate 
+            SELECT s.*, so.credit_rate, sr.offer_id 
             FROM sessions s
             JOIN service_requests sr ON s.request_id = sr.id
             JOIN service_offers so ON sr.offer_id = so.id
@@ -277,6 +277,8 @@ class SessionController {
             return;
         }
 
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+
         // Case 1: Solo/Practice session (host without external learner)
         if ($teacherId === $learnerId) {
             $pdo->beginTransaction();
@@ -288,12 +290,16 @@ class SessionController {
                 ");
                 $updSess->execute(['dur' => $durationMinutes, 'id' => $sessionId]);
 
-                $pdo->prepare("UPDATE service_requests SET status = 'Completed' WHERE id = :rid")
-                    ->execute(['rid' => $session['request_id']]);
+                if (!empty($session['request_id'])) {
+                    $pdo->prepare("UPDATE service_requests SET status = 'Completed' WHERE id = :rid")
+                        ->execute(['rid' => $session['request_id']]);
+                }
 
-                // Archive the service offer so it automatically disappears from the browse section
-                $pdo->prepare("UPDATE service_offers SET status = 'archived' WHERE id = (SELECT offer_id FROM service_requests WHERE id = :rid)")
-                    ->execute(['rid' => $session['request_id']]);
+                $offerId = (int)($session['offer_id'] ?? 0);
+                if ($offerId > 0) {
+                    $pdo->prepare("UPDATE service_offers SET status = 'archived' WHERE id = :oid")
+                        ->execute(['oid' => $offerId]);
+                }
 
                 $pdo->commit();
 
@@ -304,13 +310,32 @@ class SessionController {
                 ]);
                 return;
             } catch (\Throwable $e) {
-                $pdo->rollBack();
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
                 AuthMiddleware::jsonResponse(['error' => 'Failed ending practice session: ' . $e->getMessage()], 500);
                 return;
             }
         }
 
         // Case 2: 1-on-1 peer exchange between teacher and learner
+        // 1. Ensure both users have credit_accounts rows before starting the settlement transaction
+        try {
+            if ($driver === 'pgsql') {
+                $pdo->prepare("INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING")->execute(['uid' => $learnerId]);
+                $pdo->prepare("INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING")->execute(['uid' => $teacherId]);
+                // Synchronize PostgreSQL sequences to avoid pkey collision
+                try { $pdo->exec("SELECT setval('credit_accounts_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_accounts), 1))"); } catch (\Throwable $t) {}
+                try { $pdo->exec("SELECT setval('credit_transactions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_transactions), 1))"); } catch (\Throwable $t) {}
+                try { $pdo->exec("SELECT setval('credit_ledger_entries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_ledger_entries), 1))"); } catch (\Throwable $t) {}
+            } else {
+                $pdo->prepare("INSERT IGNORE INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)")->execute(['uid' => $learnerId]);
+                $pdo->prepare("INSERT IGNORE INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)")->execute(['uid' => $teacherId]);
+            }
+        } catch (\Throwable $initErr) {
+            // Non-fatal if sequences or rows already present
+        }
+
         $pdo->beginTransaction();
         try {
             // Check idempotency
@@ -326,12 +351,12 @@ class SessionController {
             $creditRate = (float)$session['credit_rate'];
             $calculatedCredits = round(($durationMinutes / 60.0) * $creditRate, 2);
 
-            // Fetch accounts
-            $learnerStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :id');
+            // Fetch accounts with row locking to prevent race conditions
+            $learnerStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :id FOR UPDATE');
             $learnerStmt->execute(['id' => $learnerId]);
             $learnerAcc = $learnerStmt->fetch();
 
-            $teacherStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :id');
+            $teacherStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :id FOR UPDATE');
             $teacherStmt->execute(['id' => $teacherId]);
             $teacherAcc = $teacherStmt->fetch();
 
@@ -344,16 +369,23 @@ class SessionController {
             }
 
             if ($transferAmount > 0 && $learnerAcc && $teacherAcc) {
-                $txnStmt = $pdo->prepare("
-                    INSERT INTO credit_transactions (session_id, idempotency_key, transaction_type, status)
-                    VALUES (:sess_id, :key, 'SESSION_SETTLEMENT', 'COMMITTED')
-                    RETURNING id
-                ");
-                $txnStmt->execute([
-                    'sess_id' => $sessionId,
-                    'key' => $idempotencyKey
-                ]);
-                $txnId = (int)$txnStmt->fetchColumn();
+                if ($driver === 'pgsql') {
+                    $txnStmt = $pdo->prepare("
+                        INSERT INTO credit_transactions (session_id, idempotency_key, transaction_type, status)
+                        VALUES (:sess_id, :key, 'SESSION_SETTLEMENT', 'COMMITTED')
+                        RETURNING id
+                    ");
+                    $txnStmt->execute([
+                        'sess_id' => $sessionId,
+                        'key' => $idempotencyKey
+                    ]);
+                    $txnId = (int)$txnStmt->fetchColumn();
+                } else {
+                    $txnId = Database::insertAndGetId($pdo, "
+                        INSERT INTO credit_transactions (session_id, idempotency_key, transaction_type, status)
+                        VALUES (:sess_id, :key, 'SESSION_SETTLEMENT', 'COMMITTED')
+                    ", ['sess_id' => $sessionId, 'key' => $idempotencyKey]);
+                }
 
                 $ledgerDebit = $pdo->prepare("
                     INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
@@ -367,14 +399,14 @@ class SessionController {
                 ");
                 $ledgerCredit->execute(['txn_id' => $txnId, 'acc_id' => $teacherAcc['id'], 'amount' => $transferAmount]);
 
-                $updLearner = $pdo->prepare('UPDATE credit_accounts SET balance = balance - :amount WHERE id = :id');
+                $updLearner = $pdo->prepare('UPDATE credit_accounts SET balance = balance - :amount, updated_at = NOW() WHERE id = :id');
                 $updLearner->execute(['amount' => $transferAmount, 'id' => $learnerAcc['id']]);
 
-                $updTeacher = $pdo->prepare('UPDATE credit_accounts SET balance = balance + :amount WHERE id = :id');
+                $updTeacher = $pdo->prepare('UPDATE credit_accounts SET balance = balance + :amount, updated_at = NOW() WHERE id = :id');
                 $updTeacher->execute(['amount' => $transferAmount, 'id' => $teacherAcc['id']]);
             }
 
-            // Update session
+            // Update session status to COMPLETED
             $updSess = $pdo->prepare("
                 UPDATE sessions 
                 SET status = 'COMPLETED', actual_end_at = NOW(), eligible_duration_minutes = :dur 
@@ -382,13 +414,41 @@ class SessionController {
             ");
             $updSess->execute(['dur' => $durationMinutes, 'id' => $sessionId]);
 
-            // Update request
-            $pdo->prepare("UPDATE service_requests SET status = 'Completed' WHERE id = :rid")
-                ->execute(['rid' => $session['request_id']]);
+            // Update service request status to Completed
+            if (!empty($session['request_id'])) {
+                $pdo->prepare("UPDATE service_requests SET status = 'Completed' WHERE id = :rid")
+                    ->execute(['rid' => $session['request_id']]);
+            }
 
             // Archive the service offer so it automatically disappears from the browse section
-            $pdo->prepare("UPDATE service_offers SET status = 'archived' WHERE id = (SELECT offer_id FROM service_requests WHERE id = :rid)")
-                ->execute(['rid' => $session['request_id']]);
+            $offerId = (int)($session['offer_id'] ?? 0);
+            if ($offerId > 0) {
+                $pdo->prepare("UPDATE service_offers SET status = 'archived' WHERE id = :oid")
+                    ->execute(['oid' => $offerId]);
+            }
+
+            // Insert real-time notifications for both teacher and learner
+            try {
+                if ($transferAmount > 0) {
+                    $pdo->prepare("
+                        INSERT INTO notifications (user_id, title, message)
+                        VALUES (:uid, 'TimeCredits Received!', :msg)
+                    ")->execute([
+                        'uid' => $teacherId,
+                        'msg' => sprintf('You earned +%.2f TimeCredits for your teaching session (%d mins). Credits are now available in your wallet!', $transferAmount, $durationMinutes)
+                    ]);
+
+                    $pdo->prepare("
+                        INSERT INTO notifications (user_id, title, message)
+                        VALUES (:uid, 'Session Concluded & Credits Settled', :msg)
+                    ")->execute([
+                        'uid' => $learnerId,
+                        'msg' => sprintf('Your live class concluded. %.2f TC was transferred to your instructor. Please leave a review!', $transferAmount)
+                    ]);
+                }
+            } catch (\Throwable $notifErr) {
+                // Non-fatal if notifications fail
+            }
 
             $pdo->commit();
 
@@ -398,7 +458,9 @@ class SessionController {
                 'duration_minutes' => $durationMinutes
             ]);
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             AuthMiddleware::jsonResponse(['error' => 'Settlement failed: ' . $e->getMessage()], 500);
         }
     }
