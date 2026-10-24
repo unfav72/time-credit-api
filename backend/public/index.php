@@ -217,13 +217,30 @@ try {
             }
         }
 
+        // Trigger inspection
+        $triggers = [];
+        if ($driver === 'pgsql') {
+            try {
+                $trigStmt = $pdo->query("
+                    SELECT tg.tgname, pr.proname, pr.prosrc
+                    FROM pg_trigger tg
+                    JOIN pg_proc pr ON tg.tgfoid = pr.oid
+                    WHERE tg.tgrelid = 'users'::regclass
+                ");
+                $triggers = $trigStmt->fetchAll();
+            } catch (\Throwable $tErr) {
+                $triggers = ['error' => $tErr->getMessage()];
+            }
+        }
+
         AuthMiddleware::jsonResponse([
             'status' => empty($errors) ? 'success' : 'partial',
             'driver' => $driver,
             'migrations_applied' => $applied,
             'migration_errors' => $errors,
             'sequences' => $seqReport,
-            'table_counts' => $counts
+            'table_counts' => $counts,
+            'triggers_on_users' => $triggers
         ]);
         exit;
     }

@@ -79,6 +79,12 @@ class AuthController {
                 'bio' => $bio ?: 'Skill-exchange enthusiast on TimeCredit Live.',
             ]);
 
+            $step = 'post_insert_user_check';
+            $pdoErr = $pdo->errorInfo();
+            if (!empty($pdoErr[2])) {
+                throw new RuntimeException("PDO connection error after insert_user: " . $pdoErr[2]);
+            }
+
             $step = 'check_wallet';
             $accCheck = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :user_id');
             $accCheck->execute(['user_id' => $userId]);
