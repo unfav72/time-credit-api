@@ -13,7 +13,8 @@ import {
   CalendarCheck,
   CreditCard,
   ShieldCheck,
-  PlusCircle
+  PlusCircle,
+  MessageSquare
 } from 'lucide-react';
 import { ClayBadge } from './ClayBadge';
 
@@ -42,6 +43,7 @@ export const ClaySidebar: React.FC<ClaySidebarProps> = ({
     { id: 'requests', label: 'Service Requests', icon: <Inbox size={18} /> },
     { id: 'sessions', label: 'My Sessions', icon: <CalendarCheck size={18} /> },
     { id: 'classroom', label: 'Live Classroom', icon: <Video size={18} />, highlight: true },
+    { id: 'chat', label: 'Peer Chat & Friends', icon: <MessageSquare size={18} /> },
     { id: 'wallet', label: 'TimeCredit Wallet', icon: <Wallet size={18} /> },
     { id: 'reports', label: 'DBMS Analytics', icon: <BarChart3 size={18} /> },
     { id: 'notifications', label: 'Notifications', icon: <Bell size={18} /> },

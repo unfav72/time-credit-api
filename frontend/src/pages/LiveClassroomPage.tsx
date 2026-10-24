@@ -55,6 +55,15 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const streamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
 
+  // WebRTC P2P Two-Way Live Video Streaming states
+  const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [hasRemoteAudio, setHasRemoteAudio] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'connected' | 'failed'>('idle');
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const lastSignalIdRef = useRef<number>(0);
+
   // Settlement modal states
   const [settleModalOpen, setSettleModalOpen] = useState(false);
   const [settling, setSettling] = useState(false);
@@ -141,6 +150,34 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     return () => clearInterval(interval);
   }, [isTimerRunning]);
 
+  // Synchronize local audio/video tracks to active RTCPeerConnection
+  const syncLocalTracksToPeer = (stream: MediaStream | null) => {
+    if (!pcRef.current || !stream) return;
+    try {
+      const senders = pcRef.current.getSenders();
+      stream.getTracks().forEach(track => {
+        const existingSender = senders.find(s => s.track && s.track.kind === track.kind);
+        if (existingSender) {
+          existingSender.replaceTrack(track).catch(err => console.warn('WebRTC replaceTrack error:', err));
+        } else {
+          pcRef.current?.addTrack(track, stream);
+        }
+      });
+    } catch (e) {
+      console.warn('Error syncing tracks to peer connection:', e);
+    }
+  };
+
+  // Ensure remote video element is attached whenever remote stream updates
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      if (remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      }
+      remoteVideoRef.current.play().catch(e => console.warn('Remote video play error:', e));
+    }
+  }, [hasRemoteVideo, connectionStatus]);
+
   const stopAllMediaTracks = () => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => {
@@ -154,10 +191,23 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       });
       screenStreamRef.current = null;
     }
+    if (pcRef.current) {
+      try { pcRef.current.close(); } catch {}
+      pcRef.current = null;
+    }
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach(track => {
+        try { track.stop(); } catch {}
+      });
+      remoteStreamRef.current = null;
+    }
     setHasMediaStream(false);
     setCameraActive(false);
     setMicActive(false);
     setScreenSharing(false);
+    setHasRemoteVideo(false);
+    setHasRemoteAudio(false);
+    setConnectionStatus('idle');
   };
 
   const initializeMedia = async (forceVideo = true, forceAudio = true) => {
@@ -190,6 +240,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         setHasMediaStream(true);
         setCameraActive(true);
         setMicActive(stream.getAudioTracks().length > 0);
+        syncLocalTracksToPeer(stream);
       }
     } catch (err: any) {
       console.warn('Camera/Mic permission not granted or device unavailable:', err);
@@ -217,6 +268,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     }
 
     setCameraActive(nextState);
+    syncLocalTracksToPeer(streamRef.current);
   };
 
   const toggleMic = () => {
@@ -307,6 +359,184 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     const interval = setInterval(loadChat, 3500);
     return () => clearInterval(interval);
   }, [activeSession]);
+
+  // WebRTC P2P Two-Way Live Audio & Video Streaming Effect
+  useEffect(() => {
+    if (!activeSession || activeSession.status !== 'IN_PROGRESS') return;
+
+    let isMounted = true;
+    const queuedCandidates: any[] = [];
+    lastSignalIdRef.current = 0;
+
+    const isHost = activeSession.teacher_id === currentUser.id || activeSession.teacher_name === currentUser.full_name;
+
+    // 1. Initialize PeerConnection with standard Google STUN servers
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
+      ]
+    });
+    pcRef.current = pc;
+    setConnectionStatus('connecting');
+
+    // 2. Add local stream tracks to PC if available
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        pc.addTrack(track, streamRef.current!);
+      });
+    }
+
+    // 3. Receive remote stream tracks
+    pc.ontrack = (event) => {
+      if (!isMounted) return;
+      console.log('[WebRTC P2P] Inbound track received:', event.track.kind);
+      if (!remoteStreamRef.current) {
+        remoteStreamRef.current = new MediaStream();
+      }
+      remoteStreamRef.current.addTrack(event.track);
+
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+        remoteVideoRef.current.play().catch(e => console.warn('Remote video play error:', e));
+      }
+
+      if (event.track.kind === 'video') {
+        setHasRemoteVideo(true);
+      }
+      if (event.track.kind === 'audio') {
+        setHasRemoteAudio(true);
+      }
+      setConnectionStatus('connected');
+    };
+
+    // 4. Send local ICE candidates to peer via signaling API
+    pc.onicecandidate = (event) => {
+      if (event.candidate && activeSession) {
+        api.sendSignal(activeSession.id, 'ice-candidate', event.candidate.toJSON()).catch(e => {
+          console.warn('[WebRTC] ICE candidate signal error:', e);
+        });
+      }
+    };
+
+    // 5. Track state changes
+    pc.onconnectionstatechange = () => {
+      if (!isMounted) return;
+      console.log('[WebRTC P2P] Connection state:', pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        setConnectionStatus('connected');
+      } else if (pc.connectionState === 'connecting') {
+        setConnectionStatus('connecting');
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        setConnectionStatus('failed');
+      }
+    };
+
+    // 6. Broadcast join presence to session
+    api.sendSignal(activeSession.id, 'join', { user_id: currentUser.id, role: isHost ? 'teacher' : 'learner' }).catch(() => {});
+
+    // 7. Polling loop for WebRTC signals (Offers, Answers, ICE candidates)
+    const pollSignals = async () => {
+      if (!isMounted || !pcRef.current) return;
+      try {
+        const signals = await api.getSignals(activeSession.id, lastSignalIdRef.current);
+        if (!isMounted || !signals) return;
+
+        for (const sig of signals) {
+          if (sig.id > lastSignalIdRef.current) {
+            lastSignalIdRef.current = sig.id;
+          }
+
+          // Ignore own signals
+          if (sig.sender_id === currentUser.id) continue;
+
+          let payload: any = sig.payload;
+          if (typeof payload === 'string') {
+            try { payload = JSON.parse(payload); } catch {}
+          }
+
+          if (sig.signal_type === 'join') {
+            // When peer joins: if we are Host, create & dispatch WebRTC offer
+            if (isHost && pcRef.current) {
+              console.log('[WebRTC] Peer joined room; Host creating offer...');
+              const offer = await pcRef.current.createOffer();
+              await pcRef.current.setLocalDescription(offer);
+              await api.sendSignal(activeSession.id, 'offer', offer);
+            }
+          } else if (sig.signal_type === 'offer') {
+            // When learner receives Host's offer, create Answer
+            if (!isHost && pcRef.current) {
+              console.log('[WebRTC] Received offer from host; setting remote description and answering...');
+              await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload as any));
+
+              // Drain any queued early ICE candidates
+              while (queuedCandidates.length > 0) {
+                const c = queuedCandidates.shift();
+                try {
+                  await pcRef.current.addIceCandidate(new RTCIceCandidate(c as any));
+                } catch (iceErr) {
+                  console.warn('ICE drain error:', iceErr);
+                }
+              }
+
+              const answer = await pcRef.current.createAnswer();
+              await pcRef.current.setLocalDescription(answer);
+              await api.sendSignal(activeSession.id, 'answer', answer);
+            }
+          } else if (sig.signal_type === 'answer') {
+            // When Host receives Learner's answer
+            if (isHost && pcRef.current) {
+              console.log('[WebRTC] Host received answer from learner; setting remote description...');
+              if (pcRef.current.signalingState !== 'stable') {
+                await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload as any));
+
+                while (queuedCandidates.length > 0) {
+                  const c = queuedCandidates.shift();
+                  try {
+                    await pcRef.current.addIceCandidate(new RTCIceCandidate(c as any));
+                  } catch (iceErr) {
+                    console.warn('ICE drain error:', iceErr);
+                  }
+                }
+              }
+            }
+          } else if (sig.signal_type === 'ice-candidate') {
+            if (pcRef.current && pcRef.current.remoteDescription && pcRef.current.remoteDescription.type) {
+              try {
+                await pcRef.current.addIceCandidate(new RTCIceCandidate(payload as any));
+              } catch (iceErr) {
+                console.warn('Failed to add received ICE candidate:', iceErr);
+              }
+            } else {
+              queuedCandidates.push(payload);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[WebRTC] Signaling poll error:', err);
+      }
+    };
+
+    const signalInterval = setInterval(pollSignals, 1500);
+    pollSignals();
+
+    return () => {
+      isMounted = false;
+      clearInterval(signalInterval);
+      if (pcRef.current) {
+        try { pcRef.current.close(); } catch {}
+        pcRef.current = null;
+      }
+      if (remoteStreamRef.current) {
+        remoteStreamRef.current.getTracks().forEach(t => { try { t.stop(); } catch {} });
+        remoteStreamRef.current = null;
+      }
+      setHasRemoteVideo(false);
+      setHasRemoteAudio(false);
+      setConnectionStatus('idle');
+    };
+  }, [activeSession?.id, activeSession?.status]);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const elapsedSecsRemainder = elapsedSeconds % 60;
@@ -595,6 +825,18 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   }
 
   // 4. LIVE IN-PROGRESS CLASSROOM WORKSPACE
+  const isHost = Boolean(activeSession && (
+    activeSession.teacher_id === currentUser.id ||
+    activeSession.teacher_name === currentUser.full_name
+  ));
+
+  const remoteUserName = isHost
+    ? (activeSession?.learner_name || 'Student / Peer')
+    : (activeSession?.teacher_name || 'Teaching Staff');
+
+  const remoteUserInitial = remoteUserName.charAt(0).toUpperCase();
+  const remoteRoleLabel = isHost ? 'Student' : 'Teaching Staff';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       {/* Top Session Status Bar */}
@@ -725,38 +967,91 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             ) : (
               <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
                 
-                {/* Teacher / Remote Tile */}
-                <div style={{ textAlign: 'center', color: '#ffffff', zIndex: 1 }}>
+                {/* Remote WebRTC Peer Video (fills the stage when active) */}
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    position: 'absolute',
+                    inset: 0,
+                    display: hasRemoteVideo ? 'block' : 'none',
+                    zIndex: 1
+                  }}
+                />
+
+                {/* Remote Video HD Streaming Badge */}
+                {hasRemoteVideo && (
                   <div
                     style={{
-                      width: '100px',
-                      height: '100px',
-                      borderRadius: '50%',
-                      background: 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                      position: 'absolute',
+                      top: '1rem',
+                      left: '1rem',
+                      background: 'rgba(15, 23, 42, 0.75)',
+                      backdropFilter: 'blur(8px)',
+                      padding: '0.45rem 0.85rem',
+                      borderRadius: '14px',
+                      border: '1px solid rgba(255, 255, 255, 0.2)',
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'center',
-                      margin: '0 auto 1.25rem',
-                      boxShadow: '0 8px 30px rgba(99, 102, 241, 0.45)',
-                      fontSize: '2.5rem',
-                      fontWeight: 800,
-                      border: '3px solid rgba(255, 255, 255, 0.8)'
+                      gap: '0.5rem',
+                      color: '#ffffff',
+                      fontSize: '0.8rem',
+                      fontWeight: 700,
+                      zIndex: 5
                     }}
                   >
-                    {(activeSession.teacher_name || currentUser.full_name).charAt(0).toUpperCase()}
+                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#22c55e', display: 'inline-block', boxShadow: '0 0 8px #22c55e' }} />
+                    <span>{remoteUserName} ({remoteRoleLabel})</span>
                   </div>
-                  <h3 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#ffffff' }}>
-                    {activeSession.teacher_name || currentUser.full_name}
-                  </h3>
-                  <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: '0.25rem' }}>
-                    {activeSession.skill_name ? `${activeSession.skill_name} Instruction` : 'Live Peer Teaching'} • Audio Streaming
-                  </p>
-                  <div style={{ display: 'inline-flex', marginTop: '0.85rem' }}>
-                    <ClayBadge variant="mint" style={{ fontSize: '0.7rem' }}>
-                      ● LIVE WEBRTC AUDIO & MEDIA STREAM
-                    </ClayBadge>
+                )}
+
+                {/* Remote Participant Avatar Placeholder (shown when remote camera is off or connecting) */}
+                {!hasRemoteVideo && (
+                  <div style={{ textAlign: 'center', color: '#ffffff', zIndex: 1, padding: '1rem' }}>
+                    <div
+                      style={{
+                        width: '104px',
+                        height: '104px',
+                        borderRadius: '50%',
+                        background: isHost
+                          ? 'linear-gradient(135deg, #3b82f6, #1d4ed8)'
+                          : 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        margin: '0 auto 1.25rem',
+                        boxShadow: '0 8px 30px rgba(99, 102, 241, 0.45)',
+                        fontSize: '2.5rem',
+                        fontWeight: 800,
+                        border: '3px solid rgba(255, 255, 255, 0.8)'
+                      }}
+                    >
+                      {remoteUserInitial}
+                    </div>
+                    <h3 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#ffffff' }}>
+                      {remoteUserName}
+                    </h3>
+                    <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+                      {remoteRoleLabel} • {activeSession.skill_name ? `${activeSession.skill_name} Instruction` : 'Live Peer Teaching'}
+                    </p>
+                    <div style={{ display: 'inline-flex', marginTop: '0.85rem' }}>
+                      <ClayBadge
+                        variant={connectionStatus === 'connected' ? 'mint' : connectionStatus === 'connecting' ? 'lavender' : 'amber'}
+                        style={{ fontSize: '0.72rem', padding: '0.25rem 0.65rem' }}
+                      >
+                        {connectionStatus === 'connected'
+                          ? '● WEBRTC P2P CONNECTED • CAMERA OFF'
+                          : connectionStatus === 'connecting'
+                          ? '⏳ CONNECTING P2P WEBRTC LINK...'
+                          : '○ WAITING FOR PEER TO ENTER ROOM'}
+                      </ClayBadge>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Local Participant Camera Picture-in-Picture */}
                 <div
@@ -774,7 +1069,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    zIndex: 2
+                    zIndex: 10
                   }}
                 >
                   <video
@@ -800,7 +1095,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                     </div>
                   )}
 
-                  <div style={{ position: 'absolute', bottom: '6px', left: '8px', background: 'rgba(0,0,0,0.6)', padding: '2px 6px', borderRadius: '4px', fontSize: '0.65rem', color: '#ffffff' }}>
+                  <div style={{ position: 'absolute', bottom: '6px', left: '8px', background: 'rgba(0,0,0,0.65)', padding: '2px 6px', borderRadius: '4px', fontSize: '0.65rem', color: '#ffffff' }}>
                     {micActive ? '🎤 On' : '🔇 Muted'}
                   </div>
                 </div>

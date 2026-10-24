@@ -11,7 +11,12 @@ import type {
   AppNotification,
   WhiteboardStroke,
   MeetingChatMessage,
-  MeetingConfig
+  MeetingConfig,
+  FriendUser,
+  FriendRequest,
+  Conversation,
+  DirectMessage,
+  PeerSignal
 } from '../types';
 
 const rawBaseUrl = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000';
@@ -607,6 +612,83 @@ class ApiClient {
 
   async sendMeetingChat(sessionId: number, message: string): Promise<MeetingChatMessage> {
     return this.request(`/api/v1/sessions/${sessionId}/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ message })
+    });
+  }
+
+  // =========================================================================
+  // 7. WEBRTC P2P LIVE STREAM SIGNALING
+  // =========================================================================
+
+  async sendSignal(sessionId: number, type: string, payload: any): Promise<void> {
+    await this.request(`/api/v1/sessions/${sessionId}/signal`, {
+      method: 'POST',
+      body: JSON.stringify({ signal_type: type, payload })
+    });
+  }
+
+  async getSignals(sessionId: number, sinceId = 0): Promise<PeerSignal[]> {
+    const query = sinceId > 0 ? `?since_id=${sinceId}` : '';
+    const res = await this.request<{ signals: PeerSignal[] }>(`/api/v1/sessions/${sessionId}/signal${query}`, {
+      method: 'GET'
+    });
+    return res.signals || [];
+  }
+
+  // =========================================================================
+  // 8. FRIENDSHIPS & DIRECT MESSAGING
+  // =========================================================================
+
+  async getFriends(): Promise<{
+    friends: FriendUser[];
+    pending_received: FriendRequest[];
+    pending_sent: FriendRequest[];
+  }> {
+    return this.request('/api/v1/friends', { method: 'GET' });
+  }
+
+  async sendFriendRequest(targetUserId?: number, targetEmail?: string): Promise<{ message: string }> {
+    return this.request('/api/v1/friends/request', {
+      method: 'POST',
+      body: JSON.stringify({ target_user_id: targetUserId, target_email: targetEmail })
+    });
+  }
+
+  async acceptFriendRequest(friendshipId: number): Promise<{ message: string }> {
+    return this.request(`/api/v1/friends/${friendshipId}/accept`, { method: 'POST' });
+  }
+
+  async declineFriendRequest(friendshipId: number): Promise<{ message: string }> {
+    return this.request(`/api/v1/friends/${friendshipId}/decline`, { method: 'POST' });
+  }
+
+  async searchUsersDirectory(query = ''): Promise<Array<{ id: number; full_name: string; email: string; bio?: string; role: string }>> {
+    const q = encodeURIComponent(query);
+    const res = await this.request<{ users: Array<{ id: number; full_name: string; email: string; bio?: string; role: string }> }>(
+      `/api/v1/users/directory?q=${q}`,
+      { method: 'GET' }
+    );
+    return res.users || [];
+  }
+
+  async getConversations(): Promise<Conversation[]> {
+    const res = await this.request<{ conversations: Conversation[] }>('/api/v1/messages/conversations', {
+      method: 'GET'
+    });
+    return res.conversations || [];
+  }
+
+  async getDirectMessages(peerId: number, sinceId = 0): Promise<DirectMessage[]> {
+    const query = sinceId > 0 ? `?since_id=${sinceId}` : '';
+    const res = await this.request<{ messages: DirectMessage[] }>(`/api/v1/messages/${peerId}${query}`, {
+      method: 'GET'
+    });
+    return res.messages || [];
+  }
+
+  async sendDirectMessage(peerId: number, message: string): Promise<DirectMessage> {
+    return this.request(`/api/v1/messages/${peerId}`, {
       method: 'POST',
       body: JSON.stringify({ message })
     });

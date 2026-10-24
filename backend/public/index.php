@@ -381,6 +381,32 @@ try {
         WhiteboardController::sendChatMessage((int)$matches[1]);
     }
 
+    // --- WEBRTC P2P LIVE STREAM SIGNALING ---
+    elseif (preg_match('#^/api/v1/sessions/(\d+)/signal$#', $requestUri, $matches) && $method === 'POST') {
+        ChatController::sendSignal((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)/signal$#', $requestUri, $matches) && $method === 'GET') {
+        ChatController::getSignals((int)$matches[1]);
+    }
+
+    // --- FRIENDSHIPS & DIRECT MESSAGING ---
+    elseif ($requestUri === '/api/v1/friends' && $method === 'GET') {
+        ChatController::getFriends();
+    } elseif ($requestUri === '/api/v1/friends/request' && $method === 'POST') {
+        ChatController::sendFriendRequest();
+    } elseif (preg_match('#^/api/v1/friends/(\d+)/accept$#', $requestUri, $matches) && $method === 'POST') {
+        ChatController::acceptFriendRequest((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/friends/(\d+)/decline$#', $requestUri, $matches) && $method === 'POST') {
+        ChatController::declineFriendRequest((int)$matches[1]);
+    } elseif ($requestUri === '/api/v1/users/directory' && $method === 'GET') {
+        ChatController::searchUsers();
+    } elseif ($requestUri === '/api/v1/messages/conversations' && $method === 'GET') {
+        ChatController::getConversations();
+    } elseif (preg_match('#^/api/v1/messages/(\d+)$#', $requestUri, $matches) && $method === 'GET') {
+        ChatController::getDirectMessages((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/messages/(\d+)$#', $requestUri, $matches) && $method === 'POST') {
+        ChatController::sendDirectMessage((int)$matches[1]);
+    }
+
     // --- WALLET ROUTES ---
     elseif ($requestUri === '/api/v1/wallet' && $method === 'GET') {
         WalletController::getWallet();

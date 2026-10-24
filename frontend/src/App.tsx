@@ -17,6 +17,7 @@ import { ReportsPage } from './pages/ReportsPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { ChatPage } from './pages/ChatPage';
 
 import { api } from './services/api';
 import type { User } from './types';
@@ -62,7 +63,7 @@ export function App() {
     if (updated) setCurrentUser(updated);
   };
 
-  const isAuthRequired = ['dashboard', 'classroom', 'wallet', 'browse', 'requests', 'sessions', 'profile', 'notifications', 'settings', 'skills', 'reports'].includes(currentPage);
+  const isAuthRequired = ['dashboard', 'classroom', 'chat', 'wallet', 'browse', 'requests', 'sessions', 'profile', 'notifications', 'settings', 'skills', 'reports'].includes(currentPage);
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--clay-bg)' }}>
@@ -123,6 +124,13 @@ export function App() {
 
             {currentUser && currentPage === 'classroom' && (
               <LiveClassroomPage
+                currentUser={currentUser}
+                onNavigate={handleNavigate}
+              />
+            )}
+
+            {currentUser && currentPage === 'chat' && (
+              <ChatPage
                 currentUser={currentUser}
                 onNavigate={handleNavigate}
               />

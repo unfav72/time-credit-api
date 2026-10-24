@@ -12,7 +12,8 @@ import {
   CreditCard,
   PlusCircle,
   Video,
-  LogIn
+  LogIn,
+  MessageSquare
 } from 'lucide-react';
 import { ClayBadge } from './ClayBadge';
 import { ClayButton } from './ClayButton';
@@ -154,6 +155,17 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
         >
           Classroom
         </ClayButton>
+
+        {currentUser && (
+          <ClayButton
+            size="sm"
+            variant={currentPage === 'chat' ? 'primary' : 'secondary'}
+            onClick={() => onNavigate('chat')}
+            icon={<MessageSquare size={15} />}
+          >
+            Chat & Friends
+          </ClayButton>
+        )}
 
         {/* Top Up TimeCredits Button */}
         <ClayButton

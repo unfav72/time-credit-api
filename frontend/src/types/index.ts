@@ -188,3 +188,56 @@ export interface MeetingConfig {
   room_name: string;
 }
 
+export interface FriendUser {
+  friendship_id: number;
+  user_id: number;
+  full_name: string;
+  email: string;
+  bio?: string;
+  role: string;
+  friends_since: string;
+}
+
+export interface FriendRequest {
+  request_id: number;
+  created_at: string;
+  sender_id?: number;
+  sender_name?: string;
+  sender_email?: string;
+  sender_bio?: string;
+  receiver_id?: number;
+  receiver_name?: string;
+  receiver_email?: string;
+}
+
+export interface Conversation {
+  peer_id: number;
+  full_name: string;
+  email: string;
+  bio?: string;
+  role: string;
+  last_message?: string;
+  last_message_time?: string;
+  unread_count: number;
+  is_friend: boolean;
+}
+
+export interface DirectMessage {
+  id: number;
+  sender_id: number;
+  receiver_id: number;
+  sender_name: string;
+  message: string;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface PeerSignal {
+  id: number;
+  session_id: number;
+  sender_id: number;
+  signal_type: string;
+  payload: string;
+  created_at: string;
+}
+
