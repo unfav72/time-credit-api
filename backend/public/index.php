@@ -140,6 +140,94 @@ try {
         AuthController::changePassword();
     }
 
+    // --- SYSTEM & DATABASE SETUP ROUTE ---
+    elseif (($requestUri === '/api/v1/system/setup' || $requestUri === '/api/system/setup') && in_array($method, ['GET', 'POST'])) {
+        $pdo = Database::getCoreConnection();
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+
+        // Run migrations
+        $applied = [];
+        $errors = [];
+        if ($driver === 'pgsql') {
+            $pdo->exec("CREATE TABLE IF NOT EXISTS schema_migrations (
+                id SERIAL PRIMARY KEY,
+                migration VARCHAR(255) NOT NULL UNIQUE,
+                applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )");
+        } else {
+            $pdo->exec("CREATE TABLE IF NOT EXISTS schema_migrations (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                migration VARCHAR(255) NOT NULL UNIQUE,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB");
+        }
+
+        $appliedList = $pdo->query("SELECT migration FROM schema_migrations")->fetchAll(PDO::FETCH_COLUMN);
+
+        $migrationsDir = __DIR__ . '/../database/migrations';
+        $files = glob($migrationsDir . '/*.sql');
+        sort($files);
+
+        foreach ($files as $file) {
+            $fn = basename($file);
+            if (in_array($fn, $appliedList, true)) continue;
+            try {
+                if ($driver !== 'pgsql' && str_contains($fn, 'sequences')) {
+                    $applied[] = "{$fn} (skipped non-pgsql)";
+                    continue;
+                }
+                $sql = file_get_contents($file);
+                $pdo->exec($sql);
+                $pdo->prepare("INSERT INTO schema_migrations (migration) VALUES (:m)")->execute(['m' => $fn]);
+                $applied[] = $fn;
+            } catch (\Throwable $mErr) {
+                $errors[] = "Migration {$fn} failed: " . $mErr->getMessage();
+            }
+        }
+
+        // Synchronize PostgreSQL sequences
+        $seqReport = [];
+        if ($driver === 'pgsql') {
+            $tables = ['users', 'skill_categories', 'skills', 'user_skills', 'service_offers', 'service_requests', 'sessions', 'credit_accounts', 'credit_transactions', 'credit_ledger_entries', 'reviews', 'notifications', 'saved_queries', 'audit_logs'];
+            foreach ($tables as $tbl) {
+                try {
+                    $seqStmt = $pdo->prepare("SELECT pg_get_serial_sequence(:t, 'id')");
+                    $seqStmt->execute(['t' => $tbl]);
+                    $seq = $seqStmt->fetchColumn();
+                    if ($seq) {
+                        $maxId = (int)$pdo->query("SELECT COALESCE(MAX(id), 0) FROM {$tbl}")->fetchColumn();
+                        $val = max($maxId, 1);
+                        $pdo->query("SELECT setval('{$seq}', {$val})");
+                        $seqReport[$tbl] = ['sequence' => $seq, 'max_id' => $maxId, 'new_currval' => $val];
+                    }
+                } catch (\Throwable $sErr) {
+                    $seqReport[$tbl] = ['error' => $sErr->getMessage()];
+                }
+            }
+        }
+
+        // Table counts
+        $counts = [];
+        $checkTables = ['users', 'credit_accounts', 'credit_transactions', 'credit_ledger_entries', 'skills', 'service_offers'];
+        foreach ($checkTables as $ct) {
+            try {
+                $counts[$ct] = (int)$pdo->query("SELECT COUNT(*) FROM {$ct}")->fetchColumn();
+            } catch (\Throwable $cErr) {
+                $counts[$ct] = 'error: ' . $cErr->getMessage();
+            }
+        }
+
+        AuthMiddleware::jsonResponse([
+            'status' => empty($errors) ? 'success' : 'partial',
+            'driver' => $driver,
+            'migrations_applied' => $applied,
+            'migration_errors' => $errors,
+            'sequences' => $seqReport,
+            'table_counts' => $counts
+        ]);
+        exit;
+    }
+
     // --- SKILLS & OFFERS ROUTES ---
     elseif ($requestUri === '/api/v1/skills' && $method === 'GET') {
         SkillController::index();

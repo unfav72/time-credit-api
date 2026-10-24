@@ -47,12 +47,10 @@ class AuthController {
 
         $pdo = Database::getCoreConnection();
 
-        // Safety: Ensure clean transaction state (reset any aborted transaction block)
+        // Safety: Ensure clean transaction state
         try {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
-            } else {
-                $pdo->exec('ROLLBACK');
             }
         } catch (\Throwable $e) {}
 
