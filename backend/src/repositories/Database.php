@@ -49,6 +49,14 @@ class Database {
             // Set explicit UTC timezone for PostgreSQL & MySQL
             if ($driver === 'pgsql') {
                 $pdo->exec("SET TIME ZONE 'UTC'");
+                try {
+                    $pdo->exec("
+                        ALTER TABLE notifications ADD COLUMN IF NOT EXISTS notification_type VARCHAR(50) DEFAULT 'SYSTEM';
+                        ALTER TABLE notifications ADD COLUMN IF NOT EXISTS action_url VARCHAR(255) DEFAULT NULL;
+                    ");
+                } catch (\Throwable $e) {
+                    // Ignore if table does not exist yet
+                }
             } elseif ($driver === 'mysql') {
                 $pdo->exec("SET time_zone = '+00:00'");
             } elseif ($driver === 'sqlite') {

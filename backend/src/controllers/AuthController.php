@@ -91,17 +91,22 @@ class AuthController {
                 VALUES (:tid, :aid, 'CREDIT', 2.00)
             ")->execute(['tid' => $txnId, 'aid' => $accId]);
 
-            // Welcome notification
-            $pdo->prepare('
-                INSERT INTO notifications (user_id, title, message, notification_type)
-                VALUES (:uid, :title, :msg, \'SYSTEM\')
-            ')->execute([
-                'uid' => $userId,
-                'title' => 'Welcome to TimeCredit Live! ⏱️',
-                'msg' => 'Welcome! You have received 2.00 welcome bonus TimeCredits to start learning immediately.'
-            ]);
-
+            // Commit core user and wallet ledger transaction FIRST
             $pdo->commit();
+
+            // Welcome notification (dispatched safely after commit)
+            try {
+                $pdo->prepare('
+                    INSERT INTO notifications (user_id, title, message)
+                    VALUES (:uid, :title, :msg)
+                ')->execute([
+                    'uid' => $userId,
+                    'title' => 'Welcome to TimeCredit Live! ⏱️',
+                    'msg' => 'Welcome! You have received 2.00 welcome bonus TimeCredits to start learning immediately.'
+                ]);
+            } catch (\Throwable $notifErr) {
+                // Non-fatal: registration and wallet balance are already safely committed
+            }
 
             // Regenerate session
             session_regenerate_id(true);
