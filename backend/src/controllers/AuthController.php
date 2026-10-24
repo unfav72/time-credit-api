@@ -67,17 +67,35 @@ class AuthController {
             $step = 'before_txn';
             $pdo->beginTransaction();
             $step = 'insert_user';
-            $userId = Database::insertAndGetId($pdo, '
-                INSERT INTO users (full_name, email, password_hash, role, status, bio)
-                VALUES (:full_name, :email, :password_hash, :role, :status, :bio)
-            ', [
-                'full_name' => $fullName,
-                'email' => $email,
-                'password_hash' => $passwordHash,
-                'role' => 'member',
-                'status' => 'active',
-                'bio' => $bio ?: 'Skill-exchange enthusiast on TimeCredit Live.',
-            ]);
+            $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+            if ($driver === 'pgsql') {
+                $userStmt = $pdo->prepare('
+                    INSERT INTO users (full_name, email, password_hash, role, status, bio)
+                    VALUES (:full_name, :email, :password_hash, :role, :status, :bio)
+                    RETURNING id
+                ');
+                $userStmt->execute([
+                    'full_name' => $fullName,
+                    'email' => $email,
+                    'password_hash' => $passwordHash,
+                    'role' => 'member',
+                    'status' => 'active',
+                    'bio' => $bio ?: 'Skill-exchange enthusiast on TimeCredit Live.',
+                ]);
+                $userId = (int)$userStmt->fetchColumn();
+            } else {
+                $userId = Database::insertAndGetId($pdo, '
+                    INSERT INTO users (full_name, email, password_hash, role, status, bio)
+                    VALUES (:full_name, :email, :password_hash, :role, :status, :bio)
+                ', [
+                    'full_name' => $fullName,
+                    'email' => $email,
+                    'password_hash' => $passwordHash,
+                    'role' => 'member',
+                    'status' => 'active',
+                    'bio' => $bio ?: 'Skill-exchange enthusiast on TimeCredit Live.',
+                ]);
+            }
 
             $step = 'check_wallet';
             $accCheck = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :user_id');
@@ -86,14 +104,30 @@ class AuthController {
 
             if (!$accRow) {
                 $step = 'insert_wallet';
-                $accId = Database::insertAndGetId($pdo, 'INSERT INTO credit_accounts (user_id, balance) VALUES (:user_id, 2.00)', ['user_id' => $userId]);
+                if ($driver === 'pgsql') {
+                    $accStmt = $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:user_id, 2.00) RETURNING id');
+                    $accStmt->execute(['user_id' => $userId]);
+                    $accId = (int)$accStmt->fetchColumn();
 
-                $step = 'insert_txn';
-                $txnKey = 'SIGNUP_BONUS_' . $userId . '_' . time();
-                $txnId = Database::insertAndGetId($pdo, "
-                    INSERT INTO credit_transactions (idempotency_key, transaction_type, status)
-                    VALUES (:key, 'SIGNUP_BONUS', 'COMMITTED')
-                ", ['key' => $txnKey]);
+                    $step = 'insert_txn';
+                    $txnKey = 'SIGNUP_BONUS_' . $userId . '_' . time();
+                    $txnStmt = $pdo->prepare("
+                        INSERT INTO credit_transactions (idempotency_key, transaction_type, status)
+                        VALUES (:key, 'SIGNUP_BONUS', 'COMMITTED')
+                        RETURNING id
+                    ");
+                    $txnStmt->execute(['key' => $txnKey]);
+                    $txnId = (int)$txnStmt->fetchColumn();
+                } else {
+                    $accId = Database::insertAndGetId($pdo, 'INSERT INTO credit_accounts (user_id, balance) VALUES (:user_id, 2.00)', ['user_id' => $userId]);
+
+                    $step = 'insert_txn';
+                    $txnKey = 'SIGNUP_BONUS_' . $userId . '_' . time();
+                    $txnId = Database::insertAndGetId($pdo, "
+                        INSERT INTO credit_transactions (idempotency_key, transaction_type, status)
+                        VALUES (:key, 'SIGNUP_BONUS', 'COMMITTED')
+                    ", ['key' => $txnKey]);
+                }
 
                 $step = 'insert_ledger';
                 $pdo->prepare("
