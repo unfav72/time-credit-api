@@ -57,11 +57,10 @@ class AuthController {
 
         $pdo->beginTransaction();
         try {
-            $stmt = $pdo->prepare('
+            $userId = Database::insertAndGetId($pdo, '
                 INSERT INTO users (full_name, email, password_hash, role, status, bio)
                 VALUES (:full_name, :email, :password_hash, :role, :status, :bio)
-            ');
-            $stmt->execute([
+            ', [
                 'full_name' => $fullName,
                 'email' => $email,
                 'password_hash' => $passwordHash,
@@ -69,28 +68,23 @@ class AuthController {
                 'status' => 'active',
                 'bio' => $bio ?: 'Skill-exchange enthusiast on TimeCredit Live.',
             ]);
-            $userId = Database::getLastInsertId($pdo, 'users');
 
             // Ensure credit account exists
             $accCheck = $pdo->prepare('SELECT id FROM credit_accounts WHERE user_id = :user_id');
             $accCheck->execute(['user_id' => $userId]);
-            if (!$accCheck->fetch()) {
-                $accStmt = $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:user_id, 2.00)');
-                $accStmt->execute(['user_id' => $userId]);
+            $accRow = $accCheck->fetch();
+            if (!$accRow) {
+                $accId = Database::insertAndGetId($pdo, 'INSERT INTO credit_accounts (user_id, balance) VALUES (:user_id, 2.00)', ['user_id' => $userId]);
+            } else {
+                $accId = (int)$accRow['id'];
             }
 
             // Record welcome bonus transaction
             $txnKey = 'SIGNUP_BONUS_' . $userId . '_' . time();
-            $txnStmt = $pdo->prepare("
+            $txnId = Database::insertAndGetId($pdo, "
                 INSERT INTO credit_transactions (idempotency_key, transaction_type, status)
                 VALUES (:key, 'SIGNUP_BONUS', 'COMMITTED')
-            ");
-            $txnStmt->execute(['key' => $txnKey]);
-            $txnId = Database::getLastInsertId($pdo, 'credit_transactions');
-
-            $accIdStmt = $pdo->prepare('SELECT id FROM credit_accounts WHERE user_id = :uid');
-            $accIdStmt->execute(['uid' => $userId]);
-            $accId = (int)$accIdStmt->fetchColumn();
+            ", ['key' => $txnKey]);
 
             $pdo->prepare("
                 INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)

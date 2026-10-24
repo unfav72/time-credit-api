@@ -51,11 +51,10 @@ class RequestController {
             return;
         }
 
-        $stmt = $pdo->prepare("
+        $requestId = Database::insertAndGetId($pdo, "
             INSERT INTO service_requests (offer_id, learner_id, teacher_id, proposed_start_at, requested_duration_minutes, message, status)
             VALUES (:offer_id, :learner_id, :teacher_id, :proposed_start_at, :requested_duration_minutes, :message, 'Pending')
-        ");
-        $stmt->execute([
+        ", [
             'offer_id' => $offerId,
             'learner_id' => $user['id'],
             'teacher_id' => $offer['teacher_id'],
@@ -63,8 +62,6 @@ class RequestController {
             'requested_duration_minutes' => $requestedDurationMinutes,
             'message' => $message
         ]);
-
-        $requestId = Database::getLastInsertId($pdo, 'service_requests');
 
         // Notify teacher
         $notif = $pdo->prepare('INSERT INTO notifications (user_id, title, message) VALUES (:uid, :title, :msg)');

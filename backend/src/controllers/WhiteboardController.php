@@ -162,12 +162,11 @@ class WhiteboardController {
             return;
         }
 
-        $stmt = $pdo->prepare('
+        $insertedId = Database::insertAndGetId($pdo, '
             INSERT INTO whiteboard_strokes (session_id, user_id, stroke_id, tool, color, stroke_width, points)
             VALUES (:sid, :uid, :stroke_id, :tool, :color, :width, :points)
             ON CONFLICT (stroke_id) DO NOTHING
-        ');
-        $stmt->execute([
+        ', [
             'sid' => $sessionId,
             'uid' => $user['id'],
             'stroke_id' => $strokeId,
@@ -176,8 +175,6 @@ class WhiteboardController {
             'width' => $strokeWidth,
             'points' => $pointsJson
         ]);
-
-        $insertedId = Database::getLastInsertId($pdo, 'whiteboard_strokes');
 
         AuthMiddleware::jsonResponse([
             'success' => true,
@@ -265,17 +262,14 @@ class WhiteboardController {
             return;
         }
 
-        $stmt = $pdo->prepare('
+        $msgId = Database::insertAndGetId($pdo, '
             INSERT INTO chat_messages (session_id, sender_id, message)
             VALUES (:sid, :uid, :msg)
-        ');
-        $stmt->execute([
+        ', [
             'sid' => $sessionId,
             'uid' => $user['id'],
             'msg' => $message
         ]);
-
-        $msgId = Database::getLastInsertId($pdo, 'chat_messages');
 
         AuthMiddleware::jsonResponse([
             'id' => $msgId,

@@ -153,13 +153,12 @@ class RazorpayService {
         }
 
         // Store topup order in database
-        $stmt = $pdo->prepare("
+        $internalOrderId = Database::insertAndGetId($pdo, "
             INSERT INTO credit_topup_orders 
                 (user_id, package_id, credits, amount_paise, currency, razorpay_order_id, status)
             VALUES 
                 (:user_id, :pkg, :credits, :amount, :cur, :rzp_order_id, 'CREATED')
-        ");
-        $stmt->execute([
+        ", [
             'user_id' => $userId,
             'pkg' => $packageId,
             'credits' => $package['credits'],
@@ -167,8 +166,6 @@ class RazorpayService {
             'cur' => $currency,
             'rzp_order_id' => $razorpayOrderId
         ]);
-
-        $internalOrderId = Database::getLastInsertId($pdo, 'credit_topup_orders');
 
         return [
             'internal_order_id' => $internalOrderId,
@@ -249,9 +246,7 @@ class RazorpayService {
 
             if (!$acc) {
                 // Create account if not present
-                $init = $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)');
-                $init->execute(['uid' => $userId]);
-                $accountId = Database::getLastInsertId($pdo, 'credit_accounts');
+                $accountId = Database::insertAndGetId($pdo, 'INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)', ['uid' => $userId]);
                 $currentBalance = 0.00;
             } else {
                 $accountId = (int)$acc['id'];
@@ -274,17 +269,15 @@ class RazorpayService {
 
             // 5. Insert master credit transaction
             $idempotencyKey = 'TOPUP_' . $order['id'] . '_' . $razorpayOrderId;
-            $txnStmt = $pdo->prepare("
+            $txnId = Database::insertAndGetId($pdo, "
                 INSERT INTO credit_transactions 
                     (session_id, topup_order_id, idempotency_key, transaction_type, status)
                 VALUES 
                     (NULL, :topup_id, :key, 'PURCHASE', 'COMMITTED')
-            ");
-            $txnStmt->execute([
+            ", [
                 'topup_id' => $order['id'],
                 'key' => $idempotencyKey
             ]);
-            $txnId = Database::getLastInsertId($pdo, 'credit_transactions');
 
             // 6. Insert credit ledger entry (CREDIT)
             $ledger = $pdo->prepare("

@@ -84,20 +84,61 @@ class Database {
     }
 
     /**
+     * Driver-agnostic helper to execute an INSERT and retrieve the inserted primary key ID.
+     * For PostgreSQL, appends "RETURNING <column>" and fetches the ID directly from the result set.
+     * For MySQL / SQLite, executes the query and retrieves $pdo->lastInsertId().
+     * This avoids calling currval() which aborts transactions in PostgreSQL.
+     */
+    public static function insertAndGetId(PDO $pdo, string $sql, array $params = [], string $column = 'id'): int {
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'pgsql') {
+            $trimmed = rtrim($sql, "; \t\n\r");
+            if (!stripos($trimmed, 'RETURNING')) {
+                $trimmed .= " RETURNING {$column}";
+            }
+            $stmt = $pdo->prepare($trimmed);
+            $stmt->execute($params);
+            $id = $stmt->fetchColumn();
+            return ($id !== false && is_numeric($id)) ? (int)$id : 0;
+        }
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $id = $pdo->lastInsertId();
+        return ($id !== false && is_numeric($id)) ? (int)$id : 0;
+    }
+
+    /**
      * Driver-agnostic helper to retrieve the last inserted auto-increment / serial ID.
      * Works seamlessly across both PostgreSQL sequences and MySQL AUTO_INCREMENT.
      */
     public static function getLastInsertId(PDO $pdo, ?string $table = null, string $column = 'id'): int {
-        try {
-            if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'pgsql' && $table !== null) {
-                $seqName = "{$table}_{$column}_seq";
-                $val = $pdo->lastInsertId($seqName);
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'pgsql') {
+            try {
+                if ($table !== null) {
+                    $stmt = $pdo->prepare("SELECT pg_get_serial_sequence(:tbl, :col)");
+                    $stmt->execute(['tbl' => $table, 'col' => $column]);
+                    $seq = $stmt->fetchColumn();
+                    if ($seq) {
+                        $val = $pdo->query("SELECT currval('$seq')")->fetchColumn();
+                        if ($val !== false && is_numeric($val) && (int)$val > 0) {
+                            return (int)$val;
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Ignore sequence check failure
+            }
+            try {
+                $val = $pdo->query("SELECT lastval()")->fetchColumn();
                 if ($val !== false && is_numeric($val) && (int)$val > 0) {
                     return (int)$val;
                 }
+            } catch (\Throwable $e) {
+                // Ignore lastval failure
             }
-        } catch (\Throwable $e) {
-            // Fall through to standard lastInsertId
+            return 0;
         }
 
         $val = $pdo->lastInsertId();

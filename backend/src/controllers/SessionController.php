@@ -157,15 +157,13 @@ class SessionController {
             }
 
             // Create credit transaction
-            $txnStmt = $pdo->prepare("
+            $txnId = Database::insertAndGetId($pdo, "
                 INSERT INTO credit_transactions (session_id, idempotency_key, transaction_type, status)
                 VALUES (:sess_id, :key, 'SESSION_SETTLEMENT', 'COMMITTED')
-            ");
-            $txnStmt->execute([
+            ", [
                 'sess_id' => $sessionId,
                 'key' => $idempotencyKey
             ]);
-            $txnId = Database::getLastInsertId($pdo, 'credit_transactions');
 
             // Double-entry ledger entries: DEBIT learner, CREDIT teacher
             $ledgerDebit = $pdo->prepare("

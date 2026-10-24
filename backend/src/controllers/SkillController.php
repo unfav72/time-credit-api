@@ -57,14 +57,12 @@ class SkillController {
         }
 
         $pdo = Database::getCoreConnection();
-        $stmt = $pdo->prepare('INSERT INTO skills (name, category_id, description) VALUES (:name, :category_id, :description)');
         try {
-            $stmt->execute([
+            $skillId = Database::insertAndGetId($pdo, 'INSERT INTO skills (name, category_id, description) VALUES (:name, :category_id, :description)', [
                 'name' => $name,
                 'category_id' => $categoryId,
                 'description' => $description
             ]);
-            $skillId = Database::getLastInsertId($pdo, 'skills');
             AuthMiddleware::jsonResponse(['message' => 'Skill created successfully', 'id' => $skillId], 201);
         } catch (\PDOException $e) {
             AuthMiddleware::jsonResponse(['error' => 'Skill already exists or invalid category.'], 400);
@@ -134,11 +132,10 @@ class SkillController {
         }
 
         $pdo = Database::getCoreConnection();
-        $stmt = $pdo->prepare("
+        $offerId = Database::insertAndGetId($pdo, "
             INSERT INTO service_offers (teacher_id, skill_id, title, description, duration_minutes, credit_rate, experience_level, language, mode, status)
             VALUES (:teacher_id, :skill_id, :title, :description, :duration_minutes, :credit_rate, :experience_level, :language, :mode, 'active')
-        ");
-        $stmt->execute([
+        ", [
             'teacher_id' => $user['id'],
             'skill_id' => $skillId,
             'title' => $title,
@@ -149,8 +146,6 @@ class SkillController {
             'language' => $language,
             'mode' => $mode
         ]);
-
-        $offerId = Database::getLastInsertId($pdo, 'service_offers');
 
         // Also ensure user_skills has an OFFER record
         $bridge = $pdo->prepare("

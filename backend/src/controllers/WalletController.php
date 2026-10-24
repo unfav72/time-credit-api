@@ -27,9 +27,7 @@ class WalletController {
 
         if (!$account) {
             // Auto initialize if missing
-            $ins = $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 2.00)');
-            $ins->execute(['uid' => $user['id']]);
-            $accountId = Database::getLastInsertId($pdo, 'credit_accounts');
+            $accountId = Database::insertAndGetId($pdo, 'INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 2.00)', ['uid' => $user['id']]);
             $account = ['id' => $accountId, 'user_id' => $user['id'], 'balance' => 2.00, 'updated_at' => date('Y-m-d H:i:s')];
         }
 
