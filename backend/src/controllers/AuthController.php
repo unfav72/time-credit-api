@@ -56,16 +56,19 @@ class AuthController {
             }
         } catch (\Throwable $e) {}
 
-        // Check if email already exists
-        $stmt = $pdo->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
-        $stmt->execute(['email' => $email]);
-        if ($stmt->fetch()) {
-            AuthMiddleware::jsonResponse(['error' => 'An account with this email address already exists.'], 409);
-            return;
-        }
-
-        $pdo->beginTransaction();
+        $step = 'init';
         try {
+            $step = 'check_email';
+            $stmt = $pdo->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
+            $stmt->execute(['email' => $email]);
+            if ($stmt->fetch()) {
+                AuthMiddleware::jsonResponse(['error' => 'An account with this email address already exists.'], 409);
+                return;
+            }
+
+            $step = 'before_txn';
+            $pdo->beginTransaction();
+            $step = 'insert_user';
             $userId = Database::insertAndGetId($pdo, '
                 INSERT INTO users (full_name, email, password_hash, role, status, bio)
                 VALUES (:full_name, :email, :password_hash, :role, :status, :bio)
@@ -78,28 +81,30 @@ class AuthController {
                 'bio' => $bio ?: 'Skill-exchange enthusiast on TimeCredit Live.',
             ]);
 
-            // Check if credit account exists (or was automatically created by PostgreSQL trigger trg_after_user_insert)
+            $step = 'check_wallet';
             $accCheck = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :user_id');
             $accCheck->execute(['user_id' => $userId]);
             $accRow = $accCheck->fetch();
 
             if (!$accRow) {
-                // Trigger didn't exist or didn't run: create wallet and bonus transaction manually
+                $step = 'insert_wallet';
                 $accId = Database::insertAndGetId($pdo, 'INSERT INTO credit_accounts (user_id, balance) VALUES (:user_id, 2.00)', ['user_id' => $userId]);
 
+                $step = 'insert_txn';
                 $txnKey = 'SIGNUP_BONUS_' . $userId . '_' . time();
                 $txnId = Database::insertAndGetId($pdo, "
                     INSERT INTO credit_transactions (idempotency_key, transaction_type, status)
                     VALUES (:key, 'SIGNUP_BONUS', 'COMMITTED')
                 ", ['key' => $txnKey]);
 
+                $step = 'insert_ledger';
                 $pdo->prepare("
                     INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
                     VALUES (:tid, :aid, 'CREDIT', 2.00)
                 ")->execute(['tid' => $txnId, 'aid' => $accId]);
             }
 
-            // Commit core user and wallet ledger transaction FIRST
+            $step = 'commit';
             $pdo->commit();
 
             // Welcome notification (dispatched safely after commit)
@@ -135,7 +140,7 @@ class AuthController {
                 'token' => $token
             ], 201);
         } catch (\Throwable $e) {
-            $origError = $e->getMessage();
+            $origError = "[Step: {$step}] " . $e->getMessage() . " (" . basename($e->getFile()) . ":" . $e->getLine() . ")";
             try {
                 if ($pdo->inTransaction()) {
                     $pdo->rollBack();
