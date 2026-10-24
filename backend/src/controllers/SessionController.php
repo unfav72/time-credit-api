@@ -77,18 +77,29 @@ class SessionController {
         $creditRate = (float)($input['credit_rate'] ?? 1.00);
         $description = trim($input['description'] ?? 'Interactive live online learning class.');
 
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+
         if ($skillId <= 0) {
             if (!empty($skillName)) {
-                $findSkill = $pdo->prepare('SELECT id FROM skills WHERE name ILIKE :name LIMIT 1');
+                $findSql = ($driver === 'pgsql') 
+                    ? 'SELECT id FROM skills WHERE name ILIKE :name LIMIT 1'
+                    : 'SELECT id FROM skills WHERE LOWER(name) = LOWER(:name) LIMIT 1';
+                $findSkill = $pdo->prepare($findSql);
                 $findSkill->execute(['name' => $skillName]);
                 $found = $findSkill->fetchColumn();
                 if ($found) {
                     $skillId = (int)$found;
                 } else {
                     $firstCat = (int)$pdo->query('SELECT id FROM skill_categories ORDER BY id ASC LIMIT 1')->fetchColumn();
-                    $stmt = $pdo->prepare('INSERT INTO skills (category_id, name, description) VALUES (:cat, :name, :desc) RETURNING id');
-                    $stmt->execute(['cat' => $firstCat ?: 1, 'name' => $skillName, 'desc' => $description]);
-                    $skillId = (int)$stmt->fetchColumn();
+                    if ($driver === 'pgsql') {
+                        $stmt = $pdo->prepare('INSERT INTO skills (category_id, name, description) VALUES (:cat, :name, :desc) RETURNING id');
+                        $stmt->execute(['cat' => $firstCat ?: 1, 'name' => $skillName, 'desc' => $description]);
+                        $skillId = (int)$stmt->fetchColumn();
+                    } else {
+                        $stmt = $pdo->prepare('INSERT INTO skills (category_id, name, description) VALUES (:cat, :name, :desc)');
+                        $stmt->execute(['cat' => $firstCat ?: 1, 'name' => $skillName, 'desc' => $description]);
+                        $skillId = (int)$pdo->lastInsertId();
+                    }
                 }
             } else {
                 $skillId = (int)$pdo->query('SELECT id FROM skills ORDER BY id ASC LIMIT 1')->fetchColumn() ?: 1;
@@ -97,10 +108,11 @@ class SessionController {
 
         $pdo->beginTransaction();
         try {
+            $retId = ($driver === 'pgsql') ? " RETURNING id" : "";
+
             $offerStmt = $pdo->prepare("
                 INSERT INTO service_offers (teacher_id, skill_id, title, description, duration_minutes, credit_rate, experience_level, language, mode, status)
-                VALUES (:teacher_id, :skill_id, :title, :description, :duration_minutes, :credit_rate, 'intermediate', 'English', 'online', 'active')
-                RETURNING id
+                VALUES (:teacher_id, :skill_id, :title, :description, :duration_minutes, :credit_rate, 'intermediate', 'English', 'online', 'active'){$retId}
             ");
             $offerStmt->execute([
                 'teacher_id' => $user['id'],
@@ -110,12 +122,11 @@ class SessionController {
                 'duration_minutes' => $durationMinutes,
                 'credit_rate' => $creditRate
             ]);
-            $offerId = (int)$offerStmt->fetchColumn();
+            $offerId = ($driver === 'pgsql') ? (int)$offerStmt->fetchColumn() : (int)$pdo->lastInsertId();
 
             $reqStmt = $pdo->prepare("
                 INSERT INTO service_requests (offer_id, teacher_id, learner_id, proposed_start_at, requested_duration_minutes, message, status)
-                VALUES (:offer_id, :teacher_id, :learner_id, NOW(), :duration, 'Live online teaching broadcast started by host.', 'Accepted')
-                RETURNING id
+                VALUES (:offer_id, :teacher_id, :learner_id, NOW(), :duration, 'Live online teaching broadcast started by host.', 'Accepted'){$retId}
             ");
             $reqStmt->execute([
                 'offer_id' => $offerId,
@@ -123,13 +134,14 @@ class SessionController {
                 'learner_id' => $user['id'],
                 'duration' => $durationMinutes
             ]);
-            $requestId = (int)$reqStmt->fetchColumn();
+            $requestId = ($driver === 'pgsql') ? (int)$reqStmt->fetchColumn() : (int)$pdo->lastInsertId();
 
             $roomId = 'tc-live-' . bin2hex(random_bytes(5));
+            $endExpr = ($driver === 'pgsql') ? "NOW() + interval '60 minutes'" : "DATE_ADD(NOW(), INTERVAL 60 MINUTE)";
+
             $sessStmt = $pdo->prepare("
                 INSERT INTO sessions (request_id, teacher_id, learner_id, scheduled_start_at, scheduled_end_at, actual_start_at, meeting_room_id, status)
-                VALUES (:req_id, :teacher_id, :learner_id, NOW(), NOW() + interval '60 minutes', NOW(), :room_id, 'IN_PROGRESS')
-                RETURNING id
+                VALUES (:req_id, :teacher_id, :learner_id, NOW(), {$endExpr}, NOW(), :room_id, 'IN_PROGRESS'){$retId}
             ");
             $sessStmt->execute([
                 'req_id' => $requestId,
@@ -137,10 +149,14 @@ class SessionController {
                 'learner_id' => $user['id'],
                 'room_id' => $roomId
             ]);
-            $sessionId = (int)$sessStmt->fetchColumn();
+            $sessionId = ($driver === 'pgsql') ? (int)$sessStmt->fetchColumn() : (int)$pdo->lastInsertId();
 
-            $part = $pdo->prepare('INSERT INTO session_participants (session_id, user_id, joined_at) VALUES (:sid, :uid, NOW())');
-            $part->execute(['sid' => $sessionId, 'uid' => $user['id']]);
+            try {
+                $part = $pdo->prepare('INSERT INTO session_participants (session_id, user_id, joined_at) VALUES (:sid, :uid, NOW())');
+                $part->execute(['sid' => $sessionId, 'uid' => $user['id']]);
+            } catch (\Throwable $pErr) {
+                // Non-fatal if session_participants table is not enabled
+            }
 
             $pdo->commit();
 
@@ -376,8 +392,6 @@ class SessionController {
         } catch (\Throwable $e) {
             $pdo->rollBack();
             AuthMiddleware::jsonResponse(['error' => 'Settlement failed: ' . $e->getMessage()], 500);
-        }
-    }
         }
     }
 
