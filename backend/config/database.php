@@ -58,7 +58,7 @@ if (!function_exists('parseTimeCreditDbConfig')) {
                 $driver = 'mysql';
             }
         } else {
-            $driver = ($connection === 'postgres' || $connection === 'postgresql' || $connection === 'pgsql') ? 'pgsql' : 'mysql';
+            $driver = ($connection === 'postgres' || $connection === 'postgresql' || $connection === 'pgsql') ? 'pgsql' : (($connection === 'sqlite') ? 'sqlite' : 'mysql');
         }
 
         if ($port === 0) {

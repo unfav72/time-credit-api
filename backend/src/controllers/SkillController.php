@@ -10,6 +10,13 @@ class SkillController {
     /**
      * GET /api/v1/skills
      */
+    public static function index(): void {
+        self::listSkills();
+    }
+
+    /**
+     * GET /api/v1/skills
+     */
     public static function listSkills(): void {
         $pdo = Database::getCoreConnection();
         $stmt = $pdo->query("
@@ -94,7 +101,7 @@ class SkillController {
             $params['category'] = $category;
         }
         if ($search) {
-            $sql .= ' AND (so.title LIKE :search OR s.name LIKE :search OR so.description LIKE :search) ';
+            $sql .= ' AND (so.title ILIKE :search OR s.name ILIKE :search OR so.description ILIKE :search) ';
             $params['search'] = '%' . $search . '%';
         }
 
@@ -144,7 +151,160 @@ class SkillController {
         ]);
 
         $offerId = Database::getLastInsertId($pdo, 'service_offers');
+
+        // Also ensure user_skills has an OFFER record
+        $bridge = $pdo->prepare("
+            INSERT INTO user_skills (user_id, skill_id, skill_type, experience_level)
+            VALUES (:uid, :sid, 'OFFER', :exp)
+            ON CONFLICT (user_id, skill_id, skill_type) DO NOTHING
+        ");
+        $bridge->execute(['uid' => $user['id'], 'sid' => $skillId, 'exp' => $experienceLevel]);
+
         AuthMiddleware::jsonResponse(['message' => 'Service offer created successfully', 'id' => $offerId], 201);
+    }
+
+    /**
+     * GET /api/v1/user/skills
+     * Retrieve offered and wanted skills for current user.
+     */
+    public static function getUserSkills(): void {
+        $user = AuthMiddleware::requireAuth();
+        $pdo = Database::getCoreConnection();
+
+        $stmt = $pdo->prepare("
+            SELECT us.id, us.skill_id, us.skill_type, us.experience_level, us.created_at,
+                   s.name AS skill_name, s.description,
+                   c.id AS category_id, c.name AS category_name
+            FROM user_skills us
+            JOIN skills s ON us.skill_id = s.id
+            JOIN skill_categories c ON s.category_id = c.id
+            WHERE us.user_id = :uid
+            ORDER BY us.created_at DESC
+        ");
+        $stmt->execute(['uid' => $user['id']]);
+        $rows = $stmt->fetchAll();
+
+        $offered = array_filter($rows, fn($r) => $r['skill_type'] === 'OFFER');
+        $wanted = array_filter($rows, fn($r) => $r['skill_type'] === 'WANT');
+
+        AuthMiddleware::jsonResponse([
+            'offered' => array_values($offered),
+            'wanted' => array_values($wanted)
+        ]);
+    }
+
+    /**
+     * POST /api/v1/user/skills
+     * Add offered or wanted skill.
+     */
+    public static function addUserSkill(): void {
+        $user = AuthMiddleware::requireAuth();
+        $input = AuthMiddleware::getJsonInput();
+
+        $skillId = (int)($input['skill_id'] ?? 0);
+        $skillType = strtoupper(trim($input['skill_type'] ?? 'OFFER'));
+        $experienceLevel = $input['experience_level'] ?? 'intermediate';
+
+        if ($skillId <= 0 || !in_array($skillType, ['OFFER', 'WANT'], true)) {
+            AuthMiddleware::jsonResponse(['error' => 'Valid skill_id and skill_type (OFFER/WANT) required.'], 422);
+            return;
+        }
+
+        $pdo = Database::getCoreConnection();
+        $stmt = $pdo->prepare("
+            INSERT INTO user_skills (user_id, skill_id, skill_type, experience_level)
+            VALUES (:uid, :sid, :stype, :exp)
+            ON CONFLICT (user_id, skill_id, skill_type) 
+            DO UPDATE SET experience_level = EXCLUDED.experience_level
+        ");
+        $stmt->execute([
+            'uid' => $user['id'],
+            'sid' => $skillId,
+            'stype' => $skillType,
+            'exp' => $experienceLevel
+        ]);
+
+        AuthMiddleware::jsonResponse(['message' => 'Skill preference saved successfully.']);
+    }
+
+    /**
+     * DELETE /api/v1/user/skills/{id}
+     */
+    public static function removeUserSkill(int $id): void {
+        $user = AuthMiddleware::requireAuth();
+        $pdo = Database::getCoreConnection();
+
+        $stmt = $pdo->prepare('DELETE FROM user_skills WHERE id = :id AND user_id = :uid');
+        $stmt->execute(['id' => $id, 'uid' => $user['id']]);
+
+        AuthMiddleware::jsonResponse(['message' => 'Skill removed successfully.']);
+    }
+
+    /**
+     * GET /api/v1/users/{id}/profile
+     * Public profile of another member (does not leak private passwords or tokens).
+     */
+    public static function getPublicProfile(int $targetUserId): void {
+        $pdo = Database::getCoreConnection();
+
+        $stmt = $pdo->prepare('
+            SELECT u.id, u.full_name, u.role, u.bio, u.created_at,
+                   (SELECT COUNT(*) FROM sessions WHERE teacher_id = u.id AND status = \'COMPLETED\') AS completed_sessions,
+                   ROUND(COALESCE(AVG(r.rating)::numeric, 5.0), 1) AS rating,
+                   COUNT(DISTINCT r.id) AS review_count
+            FROM users u
+            LEFT JOIN reviews r ON r.reviewed_user_id = u.id
+            WHERE u.id = :id AND u.status = \'active\'
+            GROUP BY u.id
+        ');
+        $stmt->execute(['id' => $targetUserId]);
+        $profile = $stmt->fetch();
+
+        if (!$profile) {
+            AuthMiddleware::jsonResponse(['error' => 'Member profile not found.'], 404);
+            return;
+        }
+
+        // Skills offered and wanted
+        $skillsStmt = $pdo->prepare("
+            SELECT us.skill_type, us.experience_level, s.id AS skill_id, s.name AS skill_name, c.name AS category_name
+            FROM user_skills us
+            JOIN skills s ON us.skill_id = s.id
+            JOIN skill_categories c ON s.category_id = c.id
+            WHERE us.user_id = :id
+        ");
+        $skillsStmt->execute(['id' => $targetUserId]);
+        $skills = $skillsStmt->fetchAll();
+
+        // Active offers
+        $offersStmt = $pdo->prepare("
+            SELECT so.id, so.title, so.description, so.duration_minutes, so.credit_rate, so.experience_level,
+                   s.name AS skill_name
+            FROM service_offers so
+            JOIN skills s ON so.skill_id = s.id
+            WHERE so.teacher_id = :id AND so.status = 'active'
+        ");
+        $offersStmt->execute(['id' => $targetUserId]);
+        $offers = $offersStmt->fetchAll();
+
+        // Recent reviews
+        $revStmt = $pdo->prepare("
+            SELECT r.rating, r.comment, r.created_at, rev.full_name AS reviewer_name
+            FROM reviews r
+            JOIN users rev ON r.reviewer_id = rev.id
+            WHERE r.reviewed_user_id = :id
+            ORDER BY r.created_at DESC
+            LIMIT 10
+        ");
+        $revStmt->execute(['id' => $targetUserId]);
+        $reviews = $revStmt->fetchAll();
+
+        AuthMiddleware::jsonResponse([
+            'profile' => $profile,
+            'skills' => $skills,
+            'offers' => $offers,
+            'reviews' => $reviews
+        ]);
     }
 
     /**

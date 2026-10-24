@@ -18,7 +18,8 @@ import {
   BookOpen,
   Code2,
   Send,
-  Maximize2
+  Maximize2,
+  Pen
 } from 'lucide-react';
 import { ClayCard } from '../components/clay/ClayCard';
 import { ClayButton } from '../components/clay/ClayButton';
@@ -26,6 +27,7 @@ import { ClayBadge } from '../components/clay/ClayBadge';
 import { ClayModal } from '../components/clay/ClayModal';
 import { api } from '../services/api';
 import type { User, Session } from '../types';
+import { CollaborativeWhiteboard } from '../components/CollaborativeWhiteboard';
 
 interface LiveClassroomPageProps {
   currentUser: User;
@@ -52,7 +54,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const [settledResult, setSettledResult] = useState<{ credits: number; duration: number } | null>(null);
 
   // In-meeting interactive whiteboard & chat
-  const [activeTab, setActiveTab] = useState<'chat' | 'notes'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'whiteboard' | 'notes'>('whiteboard');
   const [sharedNotes, setSharedNotes] = useState(
     '// Collaborative In-Built Teaching Notebook\n// Topic: Database Normalization & Query Tuning\n\n1. First Normal Form (1NF): Atomic attributes, no repeating groups.\n2. Second Normal Form (2NF): In 1NF + no partial dependency on candidate keys.\n3. Third Normal Form (3NF): In 2NF + no transitive dependency.\n4. Boyce-Codd (BCNF): For every functional dependency X -> Y, X must be a superkey.'
   );
@@ -147,18 +149,49 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     }
   };
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (!messageInput.trim()) return;
+    const text = messageInput.trim();
+    setMessageInput('');
+
     setChatMessages(prev => [
       ...prev,
       {
         sender: currentUser.full_name,
-        text: messageInput,
+        text,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
-    setMessageInput('');
+
+    if (activeSession) {
+      try {
+        await api.sendMeetingChat(activeSession.id, text);
+      } catch (e) {
+        console.warn('Failed saving chat message to database:', e);
+      }
+    }
   };
+
+  useEffect(() => {
+    if (!activeSession) return;
+    const loadChat = async () => {
+      try {
+        const msgs = await api.getMeetingChat(activeSession.id);
+        if (msgs && msgs.length > 0) {
+          setChatMessages(msgs.map(m => ({
+            sender: m.sender_name,
+            text: m.message,
+            time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          })));
+        }
+      } catch {
+        // Silently ignore
+      }
+    };
+    loadChat();
+    const interval = setInterval(loadChat, 3500);
+    return () => clearInterval(interval);
+  }, [activeSession]);
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const elapsedSecsRemainder = elapsedSeconds % 60;
@@ -454,16 +487,36 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               <Share2 size={20} />
             </button>
 
-            <ClayButton variant="secondary" onClick={() => setActiveTab(activeTab === 'chat' ? 'notes' : 'chat')}>
-              {activeTab === 'chat' ? 'Open Whiteboard Notes' : 'Open Meeting Chat'}
+            <ClayButton variant="secondary" onClick={() => setActiveTab(activeTab === 'whiteboard' ? 'chat' : 'whiteboard')}>
+              {activeTab === 'whiteboard' ? 'Open Classroom Chat' : 'Open Interactive Whiteboard'}
             </ClayButton>
           </ClayCard>
         </div>
 
         {/* Right Column: In-Built Meeting Chat & Shared Notes */}
-        <ClayCard variant="raised" style={{ height: '595px', display: 'flex', flexDirection: 'column', padding: '1.25rem' }}>
+        <ClayCard variant="raised" style={{ height: '620px', display: 'flex', flexDirection: 'column', padding: '1.25rem' }}>
           {/* Tabs Header */}
-          <div style={{ display: 'flex', background: '#f1f5f9', padding: '0.25rem', borderRadius: '14px', marginBottom: '1rem' }}>
+          <div style={{ display: 'flex', background: '#f1f5f9', padding: '0.25rem', borderRadius: '14px', marginBottom: '1rem', gap: '0.25rem' }}>
+            <button
+              onClick={() => setActiveTab('whiteboard')}
+              style={{
+                flex: 1,
+                border: 'none',
+                padding: '0.45rem',
+                borderRadius: '10px',
+                background: activeTab === 'whiteboard' ? '#ffffff' : 'transparent',
+                fontWeight: 700,
+                fontSize: '0.8rem',
+                color: activeTab === 'whiteboard' ? '#4338ca' : '#64748b',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.35rem'
+              }}
+            >
+              <Pen size={14} /> Whiteboard
+            </button>
             <button
               onClick={() => setActiveTab('chat')}
               style={{
@@ -482,7 +535,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 gap: '0.35rem'
               }}
             >
-              <MessageSquare size={14} /> Classroom Chat
+              <MessageSquare size={14} /> Chat
             </button>
             <button
               onClick={() => setActiveTab('notes')}
@@ -502,11 +555,18 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 gap: '0.35rem'
               }}
             >
-              <BookOpen size={14} /> Whiteboard Notes
+              <BookOpen size={14} /> Notes
             </button>
           </div>
 
-          {activeTab === 'chat' ? (
+          {activeTab === 'whiteboard' ? (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <CollaborativeWhiteboard
+                sessionId={activeSession ? activeSession.id : 1}
+                currentUserId={currentUser.id}
+              />
+            </div>
+          ) : activeTab === 'chat' ? (
             <>
               {/* Messages log */}
               <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.65rem', paddingRight: '0.25rem' }}>
@@ -557,7 +617,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             /* Whiteboard / Shared Notebook Area */
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
               <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.5rem' }}>
-                Shared real-time lesson notes between instructor and learner:
+                Shared lesson notes between instructor and learner:
               </div>
               <textarea
                 value={sharedNotes}

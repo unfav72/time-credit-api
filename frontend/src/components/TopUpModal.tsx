@@ -74,10 +74,14 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
           },
           handler: async function (response: any) {
             try {
+              if (!response.razorpay_payment_id || !response.razorpay_signature) {
+                throw new Error('Payment confirmation missing required provider parameters.');
+              }
+
               const verifyRes = await api.verifyPayment(
                 order.razorpay_order_id,
-                response.razorpay_payment_id || ('pay_' + Math.random().toString(36).substring(2, 10)),
-                response.razorpay_signature || ('test_mock_sig_' + Math.random().toString(36).substring(2, 10)),
+                response.razorpay_payment_id,
+                response.razorpay_signature,
                 selectedPackage.id
               );
 

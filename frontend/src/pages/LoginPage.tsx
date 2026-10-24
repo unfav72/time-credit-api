@@ -61,7 +61,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
       setLoading(true);
       try {
-        const user = await api.login(email.trim());
+        const user = await api.login(email.trim(), password);
         setSuccessMsg(`Welcome back, ${user.full_name}! Redirecting...`);
         confetti({
           particleCount: 70,
@@ -96,7 +96,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
       setLoading(true);
       try {
-        const user = await api.register(fullName.trim(), email.trim());
+        const user = await api.register(fullName.trim(), email.trim(), password, confirmPassword);
         setSuccessMsg('Account created successfully! +2.00 Welcome Credits added.');
         confetti({
           particleCount: 100,
@@ -220,7 +220,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 </div>
                 <div>
                   <div style={{ fontSize: '0.85rem', fontWeight: 800, color: '#0c4a6e' }}>ACID Double-Entry Ledger</div>
-                  <div style={{ fontSize: '0.725rem', color: '#0369a1' }}>Guaranteed tamper-proof balance records in MySQL.</div>
+                  <div style={{ fontSize: '0.725rem', color: '#0369a1' }}>Guaranteed tamper-proof balance records in PostgreSQL.</div>
                 </div>
               </div>
             </div>

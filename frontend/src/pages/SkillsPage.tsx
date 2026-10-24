@@ -45,20 +45,15 @@ export const SkillsPage: React.FC<SkillsPageProps> = ({ onNavigate }) => {
 
   const handleCreateSkill = async () => {
     if (!newSkillName.trim()) return;
-    const cat = categories.find(c => c.id === newSkillCat);
-    const newSkill: Skill = {
-      id: Date.now(),
-      category_id: newSkillCat,
-      name: newSkillName,
-      description: newSkillDesc,
-      category_name: cat?.name || 'General',
-      offer_count: 1,
-      want_count: 0
-    };
-    setSkills([newSkill, ...skills]);
-    setCreateModalOpen(false);
-    setNewSkillName('');
-    setNewSkillDesc('');
+    try {
+      await api.createSkill(newSkillName.trim(), newSkillCat, newSkillDesc.trim());
+      await loadData();
+      setCreateModalOpen(false);
+      setNewSkillName('');
+      setNewSkillDesc('');
+    } catch (err: any) {
+      alert('Failed creating skill in database: ' + err?.message);
+    }
   };
 
   const filteredSkills = skills.filter(s => {

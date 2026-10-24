@@ -6,16 +6,38 @@ declare(strict_types=1);
  * PHP 8.3+ REST API Backend
  */
 
-// Enable error reporting in development
 error_reporting(E_ALL);
 ini_set('display_errors', '0');
 
-// CORS Headers
-$origin = $_SERVER['HTTP_ORIGIN'] ?? 'http://localhost:5173';
-header("Access-Control-Allow-Origin: {$origin}");
-header('Access-Control-Allow-Credentials: true');
+// Strict CORS Origins Whitelist
+$allowedOrigins = [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:5173',
+    'http://localhost:8000',
+    'https://frontend-five-jade-83.vercel.app',
+];
+$customFrontend = getenv('FRONTEND_URL');
+if (!empty($customFrontend)) {
+    $allowedOrigins[] = rtrim($customFrontend, '/');
+}
+
+$httpOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($httpOrigin, $allowedOrigins, true)) {
+    header("Access-Control-Allow-Origin: {$httpOrigin}");
+    header('Access-Control-Allow-Credentials: true');
+} else {
+    // Default safe fallback if origin is in development or matching vercel app preview
+    if (!empty($httpOrigin) && (str_ends_with($httpOrigin, '.vercel.app') || str_contains($httpOrigin, 'localhost'))) {
+        header("Access-Control-Allow-Origin: {$httpOrigin}");
+        header('Access-Control-Allow-Credentials: true');
+    }
+}
+
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-Razorpay-Signature');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -48,19 +70,37 @@ use TimeCredit\Controllers\WalletController;
 use TimeCredit\Controllers\SqlLabController;
 use TimeCredit\Controllers\ReportController;
 use TimeCredit\Controllers\PaymentController;
+use TimeCredit\Controllers\NotificationController;
+use TimeCredit\Controllers\WhiteboardController;
 use TimeCredit\Middleware\AuthMiddleware;
+use TimeCredit\Repositories\Database;
 
 // Extract URI path
 $requestUri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'];
 
-// Health check
+// Health check endpoint with database connectivity check
 if ($requestUri === '/' || $requestUri === '/api/health') {
+    $dbStatus = 'unknown';
+    $dbDriver = 'none';
+    try {
+        $pdo = Database::getCoreConnection();
+        $dbDriver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $pdo->query('SELECT 1');
+        $dbStatus = 'connected';
+    } catch (\Throwable $e) {
+        $dbStatus = 'disconnected (' . $e->getMessage() . ')';
+    }
+
     AuthMiddleware::jsonResponse([
         'status' => 'healthy',
         'application' => 'TimeCredit Live API',
         'version' => '1.0.0',
-        'timestamp' => date('c')
+        'database' => [
+            'status' => $dbStatus,
+            'driver' => $dbDriver,
+        ],
+        'timestamp' => gmdate('Y-m-d\TH:i:s\Z')
     ]);
     exit;
 }
@@ -75,6 +115,10 @@ try {
         AuthController::logout();
     } elseif ($requestUri === '/api/v1/me' && $method === 'GET') {
         AuthController::me();
+    } elseif ($requestUri === '/api/v1/auth/profile' && $method === 'PUT') {
+        AuthController::updateProfile();
+    } elseif ($requestUri === '/api/v1/auth/change-password' && $method === 'POST') {
+        AuthController::changePassword();
     }
 
     // --- SKILLS & OFFERS ROUTES ---
@@ -90,6 +134,14 @@ try {
         SkillController::createOffer();
     } elseif ($requestUri === '/api/v1/skills/matches' && $method === 'GET') {
         SkillController::matches();
+    } elseif ($requestUri === '/api/v1/user/skills' && $method === 'GET') {
+        SkillController::getUserSkills();
+    } elseif ($requestUri === '/api/v1/user/skills' && $method === 'POST') {
+        SkillController::addUserSkill();
+    } elseif (preg_match('#^/api/v1/user/skills/(\d+)$#', $requestUri, $matches) && $method === 'DELETE') {
+        SkillController::removeUserSkill((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/users/(\d+)/profile$#', $requestUri, $matches) && $method === 'GET') {
+        SkillController::getPublicProfile((int)$matches[1]);
     }
 
     // --- SERVICE REQUESTS ROUTES ---
@@ -114,6 +166,21 @@ try {
         SessionController::review((int)$matches[1]);
     }
 
+    // --- COLLABORATIVE WHITEBOARD & IN-MEETING CHAT ---
+    elseif (preg_match('#^/api/v1/sessions/(\d+)/meeting-config$#', $requestUri, $matches) && $method === 'GET') {
+        WhiteboardController::getMeetingConfig((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)/whiteboard$#', $requestUri, $matches) && $method === 'GET') {
+        WhiteboardController::getWhiteboard((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)/whiteboard/stroke$#', $requestUri, $matches) && $method === 'POST') {
+        WhiteboardController::addStroke((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)/whiteboard/clear$#', $requestUri, $matches) && $method === 'POST') {
+        WhiteboardController::clearWhiteboard((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)/chat$#', $requestUri, $matches) && $method === 'GET') {
+        WhiteboardController::getChat((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)/chat$#', $requestUri, $matches) && $method === 'POST') {
+        WhiteboardController::sendChatMessage((int)$matches[1]);
+    }
+
     // --- WALLET ROUTES ---
     elseif ($requestUri === '/api/v1/wallet' && $method === 'GET') {
         WalletController::getWallet();
@@ -130,6 +197,21 @@ try {
         PaymentController::getHistory();
     } elseif ($requestUri === '/api/v1/payments/webhook' && $method === 'POST') {
         PaymentController::webhook();
+    }
+
+    // --- NOTIFICATIONS & WEB PUSH ROUTES ---
+    elseif ($requestUri === '/api/v1/notifications' && $method === 'GET') {
+        NotificationController::index();
+    } elseif (preg_match('#^/api/v1/notifications/(\d+)/read$#', $requestUri, $matches) && $method === 'POST') {
+        NotificationController::markAsRead((int)$matches[1]);
+    } elseif ($requestUri === '/api/v1/notifications/read-all' && $method === 'POST') {
+        NotificationController::markAllAsRead();
+    } elseif ($requestUri === '/api/v1/push/subscribe' && $method === 'POST') {
+        NotificationController::subscribePush();
+    } elseif ($requestUri === '/api/v1/push/subscribe' && $method === 'DELETE') {
+        NotificationController::unsubscribePush();
+    } elseif ($requestUri === '/api/v1/push/public-key' && $method === 'GET') {
+        NotificationController::getPublicKey();
     }
 
     // --- SQL QUERY LAB ROUTES ---

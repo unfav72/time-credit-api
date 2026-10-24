@@ -52,7 +52,7 @@ class AuthController {
             return;
         }
 
-        // Hash password securely
+        // Hash password securely with PHP bcrypt
         $passwordHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 10]);
 
         $pdo->beginTransaction();
@@ -71,13 +71,41 @@ class AuthController {
             ]);
             $userId = Database::getLastInsertId($pdo, 'users');
 
-            // Ensure credit account exists (in case trigger wasn't enabled)
+            // Ensure credit account exists
             $accCheck = $pdo->prepare('SELECT id FROM credit_accounts WHERE user_id = :user_id');
             $accCheck->execute(['user_id' => $userId]);
             if (!$accCheck->fetch()) {
                 $accStmt = $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:user_id, 2.00)');
                 $accStmt->execute(['user_id' => $userId]);
             }
+
+            // Record welcome bonus transaction
+            $txnKey = 'SIGNUP_BONUS_' . $userId . '_' . time();
+            $txnStmt = $pdo->prepare("
+                INSERT INTO credit_transactions (idempotency_key, transaction_type, status)
+                VALUES (:key, 'SIGNUP_BONUS', 'COMMITTED')
+            ");
+            $txnStmt->execute(['key' => $txnKey]);
+            $txnId = Database::getLastInsertId($pdo, 'credit_transactions');
+
+            $accIdStmt = $pdo->prepare('SELECT id FROM credit_accounts WHERE user_id = :uid');
+            $accIdStmt->execute(['uid' => $userId]);
+            $accId = (int)$accIdStmt->fetchColumn();
+
+            $pdo->prepare("
+                INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
+                VALUES (:tid, :aid, 'CREDIT', 2.00)
+            ")->execute(['tid' => $txnId, 'aid' => $accId]);
+
+            // Welcome notification
+            $pdo->prepare('
+                INSERT INTO notifications (user_id, title, message, notification_type)
+                VALUES (:uid, :title, :msg, \'SYSTEM\')
+            ')->execute([
+                'uid' => $userId,
+                'title' => 'Welcome to TimeCredit Live! ⏱️',
+                'msg' => 'Welcome! You have received 2.00 welcome bonus TimeCredits to start learning immediately.'
+            ]);
 
             $pdo->commit();
 
@@ -89,13 +117,17 @@ class AuthController {
                 'email' => $email,
                 'role' => 'member',
                 'balance' => 2.00,
+                'bio' => $bio
             ];
 
+            $token = AuthMiddleware::generateToken($_SESSION['user']);
+
             AuthMiddleware::jsonResponse([
-                'message' => 'Registration successful! 2.00 Welcome TimeCredits added.',
-                'user' => $_SESSION['user']
+                'message' => 'Registration successful! 2.00 Welcome TimeCredits deposited.',
+                'user' => $_SESSION['user'],
+                'token' => $token
             ], 201);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $pdo->rollBack();
             AuthMiddleware::jsonResponse(['error' => 'Registration failed: ' . $e->getMessage()], 500);
         }
@@ -149,9 +181,12 @@ class AuthController {
             'bio' => $user['bio']
         ];
 
+        $token = AuthMiddleware::generateToken($_SESSION['user']);
+
         AuthMiddleware::jsonResponse([
             'message' => 'Login successful',
-            'user' => $_SESSION['user']
+            'user' => $_SESSION['user'],
+            'token' => $token
         ]);
     }
 
@@ -205,6 +240,86 @@ class AuthController {
         }
 
         $data['balance'] = (float)$data['balance'];
-        AuthMiddleware::jsonResponse(['user' => $data]);
+        $token = AuthMiddleware::generateToken($data);
+
+        AuthMiddleware::jsonResponse([
+            'user' => $data,
+            'token' => $token
+        ]);
+    }
+
+    /**
+     * PUT /api/v1/auth/profile
+     */
+    public static function updateProfile(): void {
+        $currentUser = AuthMiddleware::requireAuth();
+        $input = AuthMiddleware::getJsonInput();
+
+        $fullName = trim($input['full_name'] ?? '');
+        $bio = trim($input['bio'] ?? '');
+
+        if (empty($fullName)) {
+            AuthMiddleware::jsonResponse(['error' => 'Full name cannot be blank.'], 422);
+            return;
+        }
+
+        $pdo = Database::getCoreConnection();
+        $stmt = $pdo->prepare('UPDATE users SET full_name = :name, bio = :bio WHERE id = :id');
+        $stmt->execute([
+            'name' => $fullName,
+            'bio' => $bio,
+            'id' => $currentUser['id']
+        ]);
+
+        $_SESSION['user']['full_name'] = $fullName;
+        $_SESSION['user']['bio'] = $bio;
+
+        AuthMiddleware::jsonResponse([
+            'message' => 'Profile updated successfully!',
+            'user' => $_SESSION['user']
+        ]);
+    }
+
+    /**
+     * POST /api/v1/auth/change-password
+     */
+    public static function changePassword(): void {
+        $currentUser = AuthMiddleware::requireAuth();
+        $input = AuthMiddleware::getJsonInput();
+
+        $currentPassword = $input['current_password'] ?? '';
+        $newPassword = $input['new_password'] ?? '';
+        $confirmPassword = $input['confirm_password'] ?? '';
+
+        if (empty($currentPassword) || empty($newPassword)) {
+            AuthMiddleware::jsonResponse(['error' => 'Current and new password are required.'], 422);
+            return;
+        }
+
+        if (strlen($newPassword) < 8) {
+            AuthMiddleware::jsonResponse(['error' => 'New password must be at least 8 characters long.'], 422);
+            return;
+        }
+
+        if ($newPassword !== $confirmPassword) {
+            AuthMiddleware::jsonResponse(['error' => 'New password confirmation does not match.'], 422);
+            return;
+        }
+
+        $pdo = Database::getCoreConnection();
+        $stmt = $pdo->prepare('SELECT password_hash FROM users WHERE id = :id');
+        $stmt->execute(['id' => $currentUser['id']]);
+        $hash = $stmt->fetchColumn();
+
+        if (!$hash || !password_verify($currentPassword, $hash)) {
+            AuthMiddleware::jsonResponse(['error' => 'Current password is incorrect.'], 400);
+            return;
+        }
+
+        $newHash = password_hash($newPassword, PASSWORD_BCRYPT, ['cost' => 10]);
+        $upd = $pdo->prepare('UPDATE users SET password_hash = :hash WHERE id = :id');
+        $upd->execute(['hash' => $newHash, 'id' => $currentUser['id']]);
+
+        AuthMiddleware::jsonResponse(['message' => 'Password updated successfully!']);
     }
 }

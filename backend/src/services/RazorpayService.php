@@ -25,7 +25,17 @@ class RazorpayService {
         ],
         'standard' => [
             'id' => 'standard',
-            'name' => 'Standard',
+            'name' => 'Plus',
+            'credits' => 20,
+            'price_inr' => 52,
+            'amount_paise' => 5200,
+            'learning_minutes' => 300,
+            'badge' => 'Most Popular',
+            'popular' => true,
+        ],
+        'plus' => [
+            'id' => 'plus',
+            'name' => 'Plus',
             'credits' => 20,
             'price_inr' => 52,
             'amount_paise' => 5200,
@@ -35,7 +45,17 @@ class RazorpayService {
         ],
         'premium' => [
             'id' => 'premium',
-            'name' => 'Premium',
+            'name' => 'Pro',
+            'credits' => 30,
+            'price_inr' => 75,
+            'amount_paise' => 7500,
+            'learning_minutes' => 450,
+            'badge' => 'Best Value',
+            'popular' => false,
+        ],
+        'pro' => [
+            'id' => 'pro',
+            'name' => 'Pro',
             'credits' => 30,
             'price_inr' => 75,
             'amount_paise' => 7500,
@@ -44,6 +64,10 @@ class RazorpayService {
             'popular' => false,
         ],
     ];
+
+    public static function getPackages(): array {
+        return self::PACKAGES;
+    }
 
     public static function getKeyId(): string {
         return getenv('RAZORPAY_KEY_ID') ?: 'rzp_test_TrFi6LyCzcSU8k';
@@ -83,48 +107,58 @@ class RazorpayService {
 
         $razorpayOrderId = '';
 
-        // If real Razorpay credentials are set (not mock placeholders), attempt API call
-        if (!empty(getenv('RAZORPAY_KEY_ID')) && getenv('RAZORPAY_KEY_ID') !== 'rzp_test_your_test_key_id') {
-            $ch = curl_init('https://api.razorpay.com/v1/orders');
-            $payload = json_encode([
-                'amount' => $amountPaise,
-                'currency' => $currency,
-                'receipt' => $receipt,
-                'notes' => [
-                    'package_id' => $packageId,
-                    'user_id' => (string)$userId,
-                    'credits' => (string)$package['credits']
-                ]
-            ]);
+        // Attempt Razorpay API order creation
+        $ch = curl_init('https://api.razorpay.com/v1/orders');
+        $payload = json_encode([
+            'amount' => $amountPaise,
+            'currency' => $currency,
+            'receipt' => $receipt,
+            'notes' => [
+                'package_id' => $packageId,
+                'user_id' => (string)$userId,
+                'credits' => (string)$package['credits']
+            ]
+        ]);
 
-            curl_setopt($ch, CURLOPT_USERPWD, "{$keyId}:{$keySecret}");
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_USERPWD, "{$keyId}:{$keySecret}");
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 12);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
 
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
 
-            if ($httpCode === 200 || $httpCode === 201) {
-                $decoded = json_decode($response, true);
-                $razorpayOrderId = $decoded['id'] ?? '';
+        if ($httpCode === 200 || $httpCode === 201) {
+            $decoded = json_decode((string)$response, true);
+            $razorpayOrderId = $decoded['id'] ?? '';
+        } else {
+            $decoded = json_decode((string)$response, true);
+            $errMsg = $decoded['error']['description'] ?? $curlErr ?? 'Razorpay API returned HTTP ' . $httpCode;
+            
+            // In local/test development, allow simulated order if keys are offline/unreachable
+            if (getenv('APP_ENV') !== 'production' && (empty($keyId) || str_contains($keyId, 'test'))) {
+                error_log("Razorpay API Warning in development mode ({$httpCode}): {$errMsg}. Creating test order.");
+                $razorpayOrderId = 'order_test_' . bin2hex(random_bytes(7));
+            } else {
+                throw new RuntimeException("Razorpay Order Creation Failed ({$httpCode}): {$errMsg}");
             }
         }
 
-        // Fallback or Test/Mock mode generation if offline or testing
         if (empty($razorpayOrderId)) {
-            $razorpayOrderId = 'order_' . bin2hex(random_bytes(7));
+            $razorpayOrderId = 'order_test_' . bin2hex(random_bytes(7));
         }
 
-        // Store topup order in MySQL
-        $stmt = $pdo->prepare('
+        // Store topup order in database
+        $stmt = $pdo->prepare("
             INSERT INTO credit_topup_orders 
                 (user_id, package_id, credits, amount_paise, currency, razorpay_order_id, status)
             VALUES 
                 (:user_id, :pkg, :credits, :amount, :cur, :rzp_order_id, 'CREATED')
-        ');
+        ");
         $stmt->execute([
             'user_id' => $userId,
             'pkg' => $packageId,

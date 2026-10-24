@@ -26,6 +26,8 @@ class Database {
                 $config['database'],
                 $sslmodePart
             );
+        } elseif ($driver === 'sqlite') {
+            $dsn = sprintf('sqlite:%s', $config['database']);
         } else {
             $dsn = sprintf(
                 'mysql:host=%s;port=%d;dbname=%s;charset=%s',
@@ -37,12 +39,23 @@ class Database {
         }
 
         try {
-            return new PDO(
+            $pdo = new PDO(
                 $dsn,
-                $config['username'],
-                $config['password'],
+                $driver === 'sqlite' ? null : $config['username'],
+                $driver === 'sqlite' ? null : $config['password'],
                 $config['options'] ?? []
             );
+
+            // Set explicit UTC timezone for PostgreSQL & MySQL
+            if ($driver === 'pgsql') {
+                $pdo->exec("SET TIME ZONE 'UTC'");
+            } elseif ($driver === 'mysql') {
+                $pdo->exec("SET time_zone = '+00:00'");
+            } elseif ($driver === 'sqlite') {
+                $pdo->exec("PRAGMA foreign_keys = ON");
+            }
+
+            return $pdo;
         } catch (PDOException $e) {
             throw new RuntimeException("{$type} Database ({$driver}) Connection Failed: " . $e->getMessage(), (int)$e->getCode());
         }

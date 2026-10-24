@@ -251,11 +251,22 @@ class SessionController {
         // Determine who is being reviewed
         $reviewedUserId = ((int)$sess['teacher_id'] === (int)$user['id']) ? (int)$sess['learner_id'] : (int)$sess['teacher_id'];
 
-        $ins = $pdo->prepare('
-            INSERT INTO reviews (session_id, reviewer_id, reviewed_user_id, rating, comment)
-            VALUES (:sid, :rid, :ruid, :rating, :comment)
-            ON DUPLICATE KEY UPDATE rating = VALUES(rating), comment = VALUES(comment)
-        ');
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'pgsql' || $driver === 'sqlite') {
+            $sql = '
+                INSERT INTO reviews (session_id, reviewer_id, reviewed_user_id, rating, comment)
+                VALUES (:sid, :rid, :ruid, :rating, :comment)
+                ON CONFLICT (session_id, reviewer_id) DO UPDATE 
+                SET rating = EXCLUDED.rating, comment = EXCLUDED.comment
+            ';
+        } else {
+            $sql = '
+                INSERT INTO reviews (session_id, reviewer_id, reviewed_user_id, rating, comment)
+                VALUES (:sid, :rid, :ruid, :rating, :comment)
+                ON DUPLICATE KEY UPDATE rating = VALUES(rating), comment = VALUES(comment)
+            ';
+        }
+        $ins = $pdo->prepare($sql);
         $ins->execute([
             'sid' => $sessionId,
             'rid' => $user['id'],

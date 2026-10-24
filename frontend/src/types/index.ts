@@ -144,3 +144,47 @@ export interface WalletData {
   transactions: LedgerEntry[];
   purchases: PurchaseHistoryItem[];
 }
+
+export interface AppNotification {
+  id: number;
+  user_id?: number;
+  title: string;
+  message: string;
+  notification_type: 'SYSTEM' | 'REQUEST_RECEIVED' | 'REQUEST_ACCEPTED' | 'REQUEST_REJECTED' | 'SESSION_SCHEDULED' | 'SESSION_COMPLETED' | 'PAYMENT_SUCCESS' | 'SECURITY';
+  action_url?: string;
+  read_at?: string | null;
+  created_at: string;
+}
+
+export interface WhiteboardStroke {
+  id?: number;
+  stroke_id: string;
+  user_id?: number;
+  tool: 'pen' | 'eraser' | 'line' | 'rectangle' | 'text';
+  color: string;
+  stroke_width: number;
+  points: Array<{ x: number; y: number }>;
+  created_at?: string;
+}
+
+export interface MeetingChatMessage {
+  id: number;
+  session_id: number;
+  sender_id: number;
+  sender_name: string;
+  message: string;
+  created_at: string;
+}
+
+export interface MeetingConfig {
+  session_id: number;
+  meeting_room_id: string;
+  session_title: string;
+  is_teacher: boolean;
+  user: { id: number; name: string; role: string };
+  partner: { id: number; name: string };
+  provider: string;
+  domain: string;
+  room_name: string;
+}
+

@@ -13,6 +13,7 @@ import { ClayCard } from '../components/clay/ClayCard';
 import { ClayButton } from '../components/clay/ClayButton';
 import { ClayBadge } from '../components/clay/ClayBadge';
 import { ClayInput } from '../components/clay/ClayInput';
+import { api } from '../services/api';
 import type { User as UserType } from '../types';
 
 interface ProfilePageProps {
@@ -25,11 +26,15 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onUpdateU
   const [bio, setBio] = useState(currentUser.bio || '');
   const [saved, setSaved] = useState(false);
 
-  const handleSave = () => {
-    const updated = { ...currentUser, full_name: name, bio };
-    onUpdateUser(updated);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+  const handleSave = async () => {
+    try {
+      const updated = await api.updateProfile(name, bio);
+      onUpdateUser(updated);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err: any) {
+      alert('Failed to update profile in database: ' + (err?.message || err));
+    }
   };
 
   return (
