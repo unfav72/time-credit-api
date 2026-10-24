@@ -281,6 +281,30 @@ try {
         exit;
     }
 
+    // --- SYSTEM CLEANUP ROUTE ---
+    elseif (($requestUri === '/api/v1/system/cleanup' || $requestUri === '/api/system/cleanup') && in_array($method, ['GET', 'POST'])) {
+        $pdo = Database::getCoreConnection();
+        $report = [];
+        try {
+            $stmt = $pdo->query("SELECT id FROM users WHERE full_name ILIKE '%Host Tester%' OR email ILIKE '%host_test_%'");
+            $uids = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            if (!empty($uids)) {
+                $in = implode(',', array_map('intval', $uids));
+                $count = $pdo->exec("DELETE FROM users WHERE id IN ({$in})");
+                $report['host_testers_deleted'] = $count;
+            }
+
+            $offCount = $pdo->exec("DELETE FROM service_offers WHERE title ILIKE 'gaming'");
+            $report['test_offers_deleted'] = $offCount;
+
+            $report['status'] = 'success';
+        } catch (\Throwable $e) {
+            $report['error'] = $e->getMessage();
+        }
+        AuthMiddleware::jsonResponse($report);
+        exit;
+    }
+
     // --- SKILLS & OFFERS ROUTES ---
     elseif ($requestUri === '/api/v1/skills' && $method === 'GET') {
         SkillController::index();

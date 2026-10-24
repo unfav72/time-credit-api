@@ -19,12 +19,17 @@ import {
   Code2,
   Send,
   Maximize2,
-  Pen
+  Pen,
+  CalendarCheck,
+  Search,
+  PlusCircle,
+  PlayCircle
 } from 'lucide-react';
 import { ClayCard } from '../components/clay/ClayCard';
 import { ClayButton } from '../components/clay/ClayButton';
 import { ClayBadge } from '../components/clay/ClayBadge';
 import { ClayModal } from '../components/clay/ClayModal';
+import { ClayInput } from '../components/clay/ClayInput';
 import { api } from '../services/api';
 import type { User, Session } from '../types';
 import { CollaborativeWhiteboard } from '../components/CollaborativeWhiteboard';
@@ -36,12 +41,13 @@ interface LiveClassroomPageProps {
 
 export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUser, onNavigate }) => {
   const [activeSession, setActiveSession] = useState<Session | null>(null);
+  const [loadingSession, setLoadingSession] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [isTimerRunning, setIsTimerRunning] = useState(true);
+  const [isTimerRunning, setIsTimerRunning] = useState(false);
 
   // Real WebRTC MediaStream states
-  const [cameraActive, setCameraActive] = useState(true);
-  const [micActive, setMicActive] = useState(true);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [micActive, setMicActive] = useState(false);
   const [screenSharing, setScreenSharing] = useState(false);
   const [hasMediaStream, setHasMediaStream] = useState(false);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -63,22 +69,49 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const [chatMessages, setChatMessages] = useState<Array<{ sender: string; text: string; time: string }>>([]);
   const [messageInput, setMessageInput] = useState('');
 
+  // Host Live Teaching Session modal state directly on classroom
+  const [hostModalOpen, setHostModalOpen] = useState(false);
+  const [hostTitle, setHostTitle] = useState('');
+  const [hostSkill, setHostSkill] = useState('');
+  const [hostDuration, setHostDuration] = useState(60);
+  const [hostRate, setHostRate] = useState(1.0);
+  const [hostDesc, setHostDesc] = useState('');
+  const [isHosting, setIsHosting] = useState(false);
+
   useEffect(() => {
     loadSession();
-    initializeMedia();
 
     return () => {
-      // Clean up all media streams when leaving page
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(track => track.stop());
-        screenStreamRef.current = null;
-      }
+      stopAllMediaTracks();
     };
   }, []);
+
+  const loadSession = async () => {
+    setLoadingSession(true);
+    try {
+      const list = await api.getSessions();
+      // Only select an active live session that is IN_PROGRESS or SCHEDULED
+      const current = list.find(s => s.status === 'IN_PROGRESS' || s.status === 'SCHEDULED') || null;
+      setActiveSession(current);
+
+      if (current && current.status === 'IN_PROGRESS') {
+        if (current.actual_start_at) {
+          const diff = Math.max(0, Math.floor((Date.now() - new Date(current.actual_start_at).getTime()) / 1000));
+          setElapsedSeconds(diff);
+        }
+        setIsTimerRunning(true);
+        initializeMedia();
+      } else {
+        setIsTimerRunning(false);
+        stopAllMediaTracks();
+      }
+    } catch (err) {
+      console.warn('Could not load session:', err);
+      setActiveSession(null);
+    } finally {
+      setLoadingSession(false);
+    }
+  };
 
   // Ensure screen sharing video element is attached when screenSharing changes
   useEffect(() => {
@@ -108,20 +141,23 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     return () => clearInterval(interval);
   }, [isTimerRunning]);
 
-  const loadSession = async () => {
-    try {
-      const list = await api.getSessions();
-      const current = list.find(s => s.status === 'SCHEDULED' || s.status === 'IN_PROGRESS') || list[0];
-      if (current) {
-        setActiveSession(current);
-        if (current.actual_start_at) {
-          const diff = Math.max(0, Math.floor((Date.now() - new Date(current.actual_start_at).getTime()) / 1000));
-          setElapsedSeconds(diff);
-        }
-      }
-    } catch (err) {
-      console.warn('Could not load session:', err);
+  const stopAllMediaTracks = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        try { track.stop(); } catch {}
+      });
+      streamRef.current = null;
     }
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(track => {
+        try { track.stop(); } catch {}
+      });
+      screenStreamRef.current = null;
+    }
+    setHasMediaStream(false);
+    setCameraActive(false);
+    setMicActive(false);
+    setScreenSharing(false);
   };
 
   const initializeMedia = async (forceVideo = true, forceAudio = true) => {
@@ -183,56 +219,49 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     setCameraActive(nextState);
   };
 
-  const toggleMic = async () => {
-    const nextState = !micActive;
-    if (!streamRef.current || streamRef.current.getAudioTracks().length === 0) {
-      if (nextState) {
-        await initializeMedia(cameraActive, true);
-      }
-      return;
-    }
-
+  const toggleMic = () => {
+    if (!streamRef.current) return;
     const audioTracks = streamRef.current.getAudioTracks();
+    if (audioTracks.length === 0) return;
+
+    const nextState = !micActive;
     audioTracks.forEach(track => {
       track.enabled = nextState;
     });
     setMicActive(nextState);
   };
 
-  const stopScreenShare = () => {
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach(track => track.stop());
-      screenStreamRef.current = null;
-    }
-    if (screenVideoRef.current) {
-      screenVideoRef.current.srcObject = null;
-    }
-    setScreenSharing(false);
-  };
-
   const toggleScreenShare = async () => {
-    if (!screenSharing) {
-      try {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-          alert('Screen sharing is not supported by your browser or environment.');
-          return;
-        }
-
-        const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        screenStreamRef.current = displayStream;
-        setScreenSharing(true);
-
-        const videoTrack = displayStream.getVideoTracks()[0];
-        if (videoTrack) {
-          videoTrack.onended = () => {
-            stopScreenShare();
-          };
-        }
-      } catch (e: any) {
-        console.warn('Screen share canceled or failed:', e);
+    if (screenSharing) {
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach(track => track.stop());
+        screenStreamRef.current = null;
       }
-    } else {
-      stopScreenShare();
+      setScreenSharing(false);
+      return;
+    }
+
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        alert('Screen sharing is not supported by your current browser.');
+        return;
+      }
+
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false
+      });
+
+      screenStreamRef.current = screenStream;
+      setScreenSharing(true);
+
+      screenStream.getVideoTracks()[0].onended = () => {
+        setScreenSharing(false);
+        screenStreamRef.current = null;
+      };
+    } catch (err: any) {
+      console.warn('Screen share canceled or failed:', err);
+      setScreenSharing(false);
     }
   };
 
@@ -241,26 +270,25 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     const text = messageInput.trim();
     setMessageInput('');
 
-    setChatMessages(prev => [
-      ...prev,
-      {
-        sender: currentUser.full_name,
-        text,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      }
-    ]);
+    const newMsg = {
+      sender: currentUser.full_name,
+      text,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    setChatMessages(prev => [...prev, newMsg]);
 
     if (activeSession) {
       try {
         await api.sendMeetingChat(activeSession.id, text);
-      } catch (e) {
-        console.warn('Failed saving chat message to database:', e);
+      } catch {
+        // Silently handled
       }
     }
   };
 
+  // Poll real-time in-meeting chat
   useEffect(() => {
-    if (!activeSession) return;
+    if (!activeSession || activeSession.status !== 'IN_PROGRESS') return;
     const loadChat = async () => {
       try {
         const msgs = await api.getMeetingChat(activeSession.id);
@@ -284,25 +312,6 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const elapsedSecsRemainder = elapsedSeconds % 60;
   const creditRate = activeSession?.credit_rate || 1.0;
   const accruedCredits = Math.round((elapsedMinutes / 60.0) * creditRate * 100) / 100;
-
-  const stopAllMediaTracks = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        try { track.stop(); } catch {}
-      });
-      streamRef.current = null;
-    }
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach(track => {
-        try { track.stop(); } catch {}
-      });
-      screenStreamRef.current = null;
-    }
-    setHasMediaStream(false);
-    setCameraActive(false);
-    setMicActive(false);
-    setScreenSharing(false);
-  };
 
   const handleEndAndSettle = async () => {
     setSettling(true);
@@ -334,9 +343,258 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     stopAllMediaTracks();
     setIsTimerRunning(false);
     setSettleModalOpen(false);
+    setActiveSession(null);
     onNavigate(targetPage);
   };
 
+  const handleStartHostSession = async () => {
+    if (!hostTitle.trim()) {
+      alert('Please enter a session title or topic.');
+      return;
+    }
+    setIsHosting(true);
+    try {
+      const res = await api.createTeachingSession({
+        title: hostTitle,
+        skill_name: hostSkill || 'Peer Teaching & Mentorship',
+        credit_rate: hostRate,
+        duration_minutes: hostDuration,
+        description: hostDesc || 'Live interactive online teaching and learning session.'
+      });
+      setHostModalOpen(false);
+      setActiveSession({
+        ...res.session,
+        credit_rate: hostRate,
+        status: 'IN_PROGRESS'
+      });
+      setElapsedSeconds(0);
+      setIsTimerRunning(true);
+      await initializeMedia();
+    } catch (err: any) {
+      alert('Error starting live session: ' + err?.message);
+    } finally {
+      setIsHosting(false);
+    }
+  };
+
+  const handleStartScheduledClass = async () => {
+    if (!activeSession) return;
+    try {
+      await api.joinSession(activeSession.id);
+      setActiveSession({
+        ...activeSession,
+        status: 'IN_PROGRESS'
+      });
+      setIsTimerRunning(true);
+      await initializeMedia();
+    } catch (err: any) {
+      alert('Error entering classroom: ' + err?.message);
+    }
+  };
+
+  // Render Host Live Session Modal
+  const renderHostModal = () => (
+    <ClayModal
+      isOpen={hostModalOpen}
+      onClose={() => setHostModalOpen(false)}
+      title="Host & Broadcast a Live Teaching Session Online"
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
+        <p style={{ color: '#475569', fontSize: '0.9rem', lineHeight: 1.5 }}>
+          Start an instant live online class! Other members across the platform can discover your broadcast and click to join your live video classroom right away.
+        </p>
+
+        <ClayInput
+          label="Session Title / Topic"
+          placeholder="e.g. Advanced SQL Optimization & Indexing Workshop"
+          value={hostTitle}
+          onChange={(e) => setHostTitle(e.target.value)}
+        />
+
+        <ClayInput
+          label="Skill / Subject Area"
+          placeholder="e.g. PostgreSQL Database Systems"
+          value={hostSkill}
+          onChange={(e) => setHostSkill(e.target.value)}
+        />
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+          <ClayInput
+            label="Session Duration (Minutes)"
+            type="number"
+            value={hostDuration}
+            onChange={(e) => setHostDuration(Number(e.target.value))}
+          />
+          <ClayInput
+            label="Credit Rate (TC / hr)"
+            type="number"
+            step="0.25"
+            value={hostRate}
+            onChange={(e) => setHostRate(Number(e.target.value))}
+          />
+        </div>
+
+        <ClayInput
+          label="Short Description / Agenda"
+          placeholder="What will you teach? Any prerequisites for the student?"
+          value={hostDesc}
+          onChange={(e) => setHostDesc(e.target.value)}
+        />
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+          <ClayButton variant="secondary" onClick={() => setHostModalOpen(false)}>
+            Cancel
+          </ClayButton>
+          <ClayButton
+            variant="primary"
+            onClick={handleStartHostSession}
+            disabled={isHosting}
+            icon={<Sparkles size={16} />}
+          >
+            {isHosting ? 'Broadcasting...' : 'Start Live Class Now'}
+          </ClayButton>
+        </div>
+      </div>
+    </ClayModal>
+  );
+
+  // 1. Loading State
+  if (loadingSession) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '400px', gap: '1rem' }}>
+        <div style={{ width: '40px', height: '40px', borderRadius: '50%', border: '3px solid #e2e8f0', borderTopColor: '#6366f1', animation: 'spin 1s linear infinite' }} />
+        <span style={{ color: '#64748b', fontSize: '0.9rem', fontWeight: 600 }}>Checking classroom status...</span>
+      </div>
+    );
+  }
+
+  // 2. EMPTY STATE: No active class in progress
+  if (!activeSession) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '850px', margin: '2rem auto', width: '100%' }}>
+        <ClayCard
+          variant="raised"
+          style={{
+            padding: '3.5rem 2rem',
+            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '1.25rem',
+            borderRadius: '24px',
+            background: 'linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)'
+          }}
+        >
+          <div
+            style={{
+              width: '84px',
+              height: '84px',
+              borderRadius: '24px',
+              background: 'linear-gradient(135deg, #ede9fe 0%, #dbeafe 100%)',
+              color: '#6366f1',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 8px 24px rgba(99, 102, 241, 0.2)'
+            }}
+          >
+            <VideoOff size={38} />
+          </div>
+
+          <div>
+            <div style={{ display: 'inline-flex', marginBottom: '0.5rem' }}>
+              <ClayBadge variant="lavender">Classroom Idle</ClayBadge>
+            </div>
+            <h2 style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--text-main)', letterSpacing: '-0.02em' }}>
+              Classroom is Currently Empty
+            </h2>
+            <p style={{ color: '#64748b', fontSize: '0.95rem', maxWidth: '540px', margin: '0.6rem auto 0', lineHeight: 1.6 }}>
+              There is no live class running right now. The WebRTC video canvas, live audio, whiteboard, and in-meeting notebook will activate as soon as you host or join an online teaching session.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.85rem', justifyContent: 'center', marginTop: '1rem' }}>
+            <ClayButton variant="primary" onClick={() => setHostModalOpen(true)} icon={<Video size={16} />}>
+              + Host Live Teaching Session
+            </ClayButton>
+            <ClayButton variant="secondary" onClick={() => onNavigate('browse')} icon={<Search size={16} />}>
+              Browse Live Classes & Offers
+            </ClayButton>
+            <ClayButton variant="secondary" onClick={() => onNavigate('sessions')} icon={<CalendarCheck size={16} />}>
+              My Scheduled Sessions
+            </ClayButton>
+          </div>
+        </ClayCard>
+
+        {renderHostModal()}
+      </div>
+    );
+  }
+
+  // 3. SCHEDULED CLASS WAITING ROOM STATE
+  if (activeSession.status === 'SCHEDULED') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '850px', margin: '2rem auto', width: '100%' }}>
+        <ClayCard
+          variant="raised"
+          style={{
+            padding: '3rem 2rem',
+            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '1.25rem',
+            borderRadius: '24px',
+            background: 'linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%)',
+            border: '2px solid rgba(34, 197, 94, 0.3)'
+          }}
+        >
+          <div
+            style={{
+              width: '80px',
+              height: '80px',
+              borderRadius: '22px',
+              background: 'var(--pastel-mint-bg)',
+              color: '#059669',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 8px 24px rgba(34, 197, 94, 0.2)'
+            }}
+          >
+            <PlayCircle size={40} />
+          </div>
+
+          <div>
+            <div style={{ display: 'inline-flex', marginBottom: '0.5rem' }}>
+              <ClayBadge variant="mint">Scheduled Class Ready</ClayBadge>
+            </div>
+            <h2 style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0f172a' }}>
+              {activeSession.offer_title || 'Upcoming Peer Learning Class'}
+            </h2>
+            <div style={{ fontSize: '0.875rem', color: '#64748b', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '1rem', marginTop: '0.5rem' }}>
+              <span>👨‍🏫 Teacher: <strong>{activeSession.teacher_name || currentUser.full_name}</strong></span>
+              <span>👨‍🎓 Learner: <strong>{activeSession.learner_name || 'Open to peer'}</strong></span>
+              <span>💰 Rate: <strong>{Number(activeSession.credit_rate || 1.0).toFixed(2)} TC / hr</strong></span>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.85rem', justifyContent: 'center', marginTop: '1rem' }}>
+            <ClayButton variant="mint" onClick={handleStartScheduledClass} icon={<Video size={16} />}>
+              Start & Enter Live Classroom Now
+            </ClayButton>
+            <ClayButton variant="secondary" onClick={() => onNavigate('sessions')} icon={<CalendarCheck size={16} />}>
+              View All Sessions
+            </ClayButton>
+          </div>
+        </ClayCard>
+
+        {renderHostModal()}
+      </div>
+    );
+  }
+
+  // 4. LIVE IN-PROGRESS CLASSROOM WORKSPACE
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       {/* Top Session Status Bar */}
@@ -370,13 +628,13 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <h1 style={{ fontSize: '1.25rem', fontWeight: 800 }}>
-                {activeSession?.offer_title || 'Live Interactive Classroom Session'}
+                {activeSession.offer_title || 'Live Interactive Classroom Session'}
               </h1>
-              <ClayBadge variant="mint">IN-BUILT WEBRTC</ClayBadge>
+              <ClayBadge variant="mint">🔴 LIVE IN-PROGRESS</ClayBadge>
             </div>
             <div style={{ fontSize: '0.8rem', color: '#64748b', display: 'flex', gap: '0.75rem', marginTop: '0.15rem' }}>
-              <span>Instructor: <strong>{activeSession?.teacher_name || (activeSession?.teacher_id === currentUser.id ? currentUser.full_name : 'Host Instructor')}</strong></span>
-              <span>Learner: <strong>{activeSession?.learner_name || (activeSession?.learner_id === currentUser.id ? currentUser.full_name : 'Open for peer to join')}</strong></span>
+              <span>Instructor: <strong>{activeSession.teacher_name || currentUser.full_name}</strong></span>
+              <span>Learner: <strong>{activeSession.learner_name || 'Open for peer to join'}</strong></span>
               <span>Rate: <strong>{creditRate} TC / hr</strong></span>
             </div>
           </div>
@@ -432,7 +690,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             onClick={() => setSettleModalOpen(true)}
             icon={<PhoneOff size={15} />}
           >
-            End & Settle Session
+            End Session
           </ClayButton>
         </div>
       </ClayCard>
@@ -485,13 +743,13 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                       border: '3px solid rgba(255, 255, 255, 0.8)'
                     }}
                   >
-                    {(activeSession?.teacher_name || currentUser.full_name).charAt(0).toUpperCase()}
+                    {(activeSession.teacher_name || currentUser.full_name).charAt(0).toUpperCase()}
                   </div>
                   <h3 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#ffffff' }}>
-                    {activeSession?.teacher_name || currentUser.full_name}
+                    {activeSession.teacher_name || currentUser.full_name}
                   </h3>
                   <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: '0.25rem' }}>
-                    {activeSession?.skill_name ? `${activeSession.skill_name} Instruction` : 'Live Peer Teaching'} • Audio Streaming
+                    {activeSession.skill_name ? `${activeSession.skill_name} Instruction` : 'Live Peer Teaching'} • Audio Streaming
                   </p>
                   <div style={{ display: 'inline-flex', marginTop: '0.85rem' }}>
                     <ClayBadge variant="mint" style={{ fontSize: '0.7rem' }}>
@@ -681,7 +939,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 gap: '0.35rem'
               }}
             >
-              <MessageSquare size={14} /> Chat
+              <MessageSquare size={14} /> Chat ({chatMessages.length})
             </button>
             <button
               onClick={() => setActiveTab('notes')}
@@ -705,65 +963,100 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             </button>
           </div>
 
-          {activeTab === 'whiteboard' ? (
+          {/* Whiteboard Tab */}
+          {activeTab === 'whiteboard' && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               <CollaborativeWhiteboard
-                sessionId={activeSession ? activeSession.id : 1}
+                sessionId={activeSession.id}
                 currentUserId={currentUser.id}
               />
             </div>
-          ) : activeTab === 'chat' ? (
-            <>
-              {/* Messages log */}
-              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.65rem', paddingRight: '0.25rem' }}>
-                {chatMessages.map((msg, idx) => {
-                  const isMe = msg.sender === currentUser.full_name;
-                  return (
-                    <div
-                      key={idx}
-                      style={{
-                        alignSelf: isMe ? 'flex-end' : 'flex-start',
-                        maxWidth: '85%',
-                        padding: '0.65rem 0.85rem',
-                        borderRadius: '14px',
-                        background: isMe ? 'var(--pastel-lavender-bg)' : '#f8fafc',
-                        color: isMe ? '#312e81' : '#1e293b',
-                        fontSize: '0.825rem',
-                        border: '1px solid #e2e8f0',
-                        boxShadow: 'var(--clay-shadow-btn)'
-                      }}
-                    >
-                      <div style={{ fontSize: '0.7rem', fontWeight: 700, opacity: 0.8, marginBottom: '0.2rem' }}>
-                        {msg.sender} • {msg.time}
+          )}
+
+          {/* Chat Tab */}
+          {activeTab === 'chat' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <div
+                style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.65rem',
+                  paddingRight: '0.25rem',
+                  marginBottom: '0.75rem'
+                }}
+              >
+                {chatMessages.length === 0 ? (
+                  <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: '0.8rem', marginTop: '2rem' }}>
+                    No messages yet. Send a message to chat with your peer!
+                  </div>
+                ) : (
+                  chatMessages.map((msg, idx) => {
+                    const isMe = msg.sender === currentUser.full_name;
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          alignSelf: isMe ? 'flex-end' : 'flex-start',
+                          maxWidth: '85%',
+                          background: isMe ? 'var(--pastel-lavender-bg)' : '#f8fafc',
+                          padding: '0.55rem 0.85rem',
+                          borderRadius: '14px',
+                          border: '1px solid',
+                          borderColor: isMe ? 'rgba(99, 102, 241, 0.2)' : '#e2e8f0',
+                          fontSize: '0.825rem'
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', marginBottom: '0.15rem' }}>
+                          <span style={{ fontWeight: 700, color: isMe ? '#4338ca' : '#0f172a', fontSize: '0.75rem' }}>
+                            {msg.sender}
+                          </span>
+                          <span style={{ fontSize: '0.65rem', color: '#94a3b8' }}>
+                            {msg.time}
+                          </span>
+                        </div>
+                        <div style={{ color: '#334155', lineHeight: 1.4 }}>
+                          {msg.text}
+                        </div>
                       </div>
-                      <div>{msg.text}</div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
 
-              {/* Chat Input */}
-              <div style={{ display: 'flex', gap: '0.45rem', marginTop: '0.75rem', borderTop: '1px solid #e2e8f0', paddingTop: '0.75rem' }}>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <input
-                  className="clay-input"
+                  type="text"
+                  placeholder="Type in-meeting message..."
                   value={messageInput}
                   onChange={(e) => setMessageInput(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') handleSendMessage();
                   }}
-                  placeholder="Ask a question or share an answer..."
-                  style={{ fontSize: '0.8rem', padding: '0.55rem 0.85rem' }}
+                  style={{
+                    flex: 1,
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '12px',
+                    padding: '0.5rem 0.85rem',
+                    fontSize: '0.825rem',
+                    outline: 'none',
+                    background: '#f8fafc'
+                  }}
                 />
-                <ClayButton size="sm" variant="primary" onClick={handleSendMessage} icon={<Send size={14} />}>
+                <ClayButton variant="primary" size="sm" onClick={handleSendMessage} icon={<Send size={14} />}>
                   Send
                 </ClayButton>
               </div>
-            </>
-          ) : (
-            /* Whiteboard / Shared Notebook Area */
+            </div>
+          )}
+
+          {/* Collaborative Notes Tab */}
+          {activeTab === 'notes' && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-              <div style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '0.5rem' }}>
-                Shared lesson notes between instructor and learner:
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span style={{ fontSize: '0.75rem', color: '#64748b' }}>Markdown & Code Supported</span>
+                <ClayBadge variant="sky">Session Notebook</ClayBadge>
               </div>
               <textarea
                 value={sharedNotes}
@@ -771,13 +1064,13 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 style={{
                   flex: 1,
                   width: '100%',
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '0.825rem',
-                  lineHeight: 1.5,
-                  padding: '0.85rem',
-                  borderRadius: '14px',
-                  background: '#f8fafc',
                   border: '1px solid #cbd5e1',
+                  borderRadius: '14px',
+                  padding: '0.75rem',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.8rem',
+                  lineHeight: 1.5,
+                  background: '#f8fafc',
                   color: '#0f172a',
                   outline: 'none',
                   resize: 'none',
@@ -877,6 +1170,8 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
           )}
         </div>
       </ClayModal>
+
+      {renderHostModal()}
     </div>
   );
 };
