@@ -8,15 +8,30 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../config/database.php';
 
-// Simple autoloader
+// Robust autoloader for TimeCredit namespace (supports Linux case-sensitive filesystems)
 spl_autoload_register(function ($class) {
     $prefix = 'TimeCredit\\';
     $baseDir = __DIR__ . '/../src/';
     $len = strlen($prefix);
     if (strncmp($prefix, $class, $len) !== 0) return;
     $relativeClass = substr($class, $len);
-    $file = $baseDir . str_replace('\\', '/', $relativeClass) . '.php';
-    if (file_exists($file)) require_once $file;
+    $parts = explode('\\', $relativeClass);
+    $className = array_pop($parts);
+    $dirLower = strtolower(implode('/', $parts));
+    $dirExact = implode('/', $parts);
+
+    $candidates = [
+        $baseDir . str_replace('\\', '/', $relativeClass) . '.php',
+        $baseDir . ($dirLower ? $dirLower . '/' : '') . $className . '.php',
+        $baseDir . ($dirExact ? $dirExact . '/' : '') . $className . '.php',
+    ];
+
+    foreach ($candidates as $file) {
+        if (file_exists($file)) {
+            require_once $file;
+            return;
+        }
+    }
 });
 
 use TimeCredit\Repositories\Database;

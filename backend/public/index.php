@@ -44,7 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// Autoloader for TimeCredit namespace
+// Robust autoloader for TimeCredit namespace (supports Linux case-sensitive filesystems)
 spl_autoload_register(function ($class) {
     $prefix = 'TimeCredit\\';
     $baseDir = __DIR__ . '/../src/';
@@ -55,10 +55,22 @@ spl_autoload_register(function ($class) {
     }
 
     $relativeClass = substr($class, $len);
-    $file = $baseDir . str_replace('\\', '/', $relativeClass) . '.php';
+    $parts = explode('\\', $relativeClass);
+    $className = array_pop($parts);
+    $dirLower = strtolower(implode('/', $parts));
+    $dirExact = implode('/', $parts);
 
-    if (file_exists($file)) {
-        require_once $file;
+    $candidates = [
+        $baseDir . str_replace('\\', '/', $relativeClass) . '.php',
+        $baseDir . ($dirLower ? $dirLower . '/' : '') . $className . '.php',
+        $baseDir . ($dirExact ? $dirExact . '/' : '') . $className . '.php',
+    ];
+
+    foreach ($candidates as $file) {
+        if (file_exists($file)) {
+            require_once $file;
+            return;
+        }
     }
 });
 
