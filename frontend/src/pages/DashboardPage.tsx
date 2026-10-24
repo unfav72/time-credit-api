@@ -15,7 +15,10 @@ import {
   ChevronRight,
   AlertCircle,
   CreditCard,
-  PlusCircle
+  PlusCircle,
+  Target,
+  HeartHandshake,
+  MessageSquare
 } from 'lucide-react';
 import { ClayCard } from '../components/clay/ClayCard';
 import { ClayButton } from '../components/clay/ClayButton';
@@ -34,6 +37,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ currentUser, onNav
   const [sessions, setSessions] = useState<Session[]>([]);
   const [requests, setRequests] = useState<ServiceRequest[]>([]);
   const [offers, setOffers] = useState<ServiceOffer[]>([]);
+  const [userSkills, setUserSkills] = useState<{ offered: any[]; wanted: any[] }>({ offered: [], wanted: [] });
+  const [matches, setMatches] = useState<any[]>([]);
 
   useEffect(() => {
     loadData();
@@ -41,14 +46,18 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ currentUser, onNav
 
   const loadData = async () => {
     try {
-      const [sess, reqs, offs] = await Promise.all([
-        api.getSessions(),
-        api.getRequests(),
-        api.getOffers()
+      const [sess, reqs, offs, uSkills, matchData] = await Promise.all([
+        api.getSessions().catch(() => []),
+        api.getRequests().catch(() => []),
+        api.getOffers().catch(() => []),
+        api.getUserSkills().catch(() => ({ offered: [], wanted: [] })),
+        api.getSkillMatches().catch(() => [])
       ]);
       setSessions(sess);
       setRequests(reqs);
       setOffers(offs);
+      setUserSkills(uSkills);
+      setMatches(matchData);
     } catch (e) {
       console.error(e);
     }
@@ -152,8 +161,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ currentUser, onNav
 
         <ClayStatCard
           title="Skills Offered & Wanted"
-          value={`${currentUser.skills_offered_count ?? 0} Offered / ${currentUser.skills_wanted_count ?? 0} Wanted`}
-          subtitle="Matched via relational joins"
+          value={`${userSkills.offered.length || (currentUser.skills_offered_count ?? 0)} Offered / ${userSkills.wanted.length || (currentUser.skills_wanted_count ?? 0)} Wanted`}
+          subtitle={matches.length > 0 ? `${matches.length} Matched Tutors in Neon DB` : "Matched via relational joins"}
           icon={<BookOpen size={22} color="#6366f1" />}
           iconBg="#ede9fe"
           badge="Relational"
@@ -292,6 +301,114 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ currentUser, onNav
           </div>
         </ClayCard>
       </div>
+
+      {/* Skills Wanted & Database Matches Widget */}
+      <ClayCard variant="raised" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1.5rem' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+            <div style={{ width: '38px', height: '38px', borderRadius: '12px', background: 'var(--pastel-mint-bg)', color: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Target size={20} />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+                  My Wanted Skills & Matched Tutors
+                </h2>
+                {matches.length > 0 && (
+                  <ClayBadge variant="mint">{matches.length} DB Matched</ClayBadge>
+                )}
+              </div>
+              <p style={{ fontSize: '0.8rem', color: '#64748b', margin: '2px 0 0' }}>
+                Skills you want to learn, matched with tutors offering them in PostgreSQL.
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <ClayButton size="sm" variant="mint" onClick={() => onNavigate('skills')}>
+              Manage Wanted Skills ({userSkills.wanted.length})
+            </ClayButton>
+          </div>
+        </div>
+
+        {userSkills.wanted.length === 0 ? (
+          <div style={{ padding: '1.75rem', textAlign: 'center', background: '#f8fafc', borderRadius: '16px', border: '1px dashed #cbd5e1' }}>
+            <HeartHandshake size={32} color="#94a3b8" style={{ margin: '0 auto 0.5rem' }} />
+            <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#334155' }}>
+              You haven't added any wanted skills yet
+            </div>
+            <p style={{ fontSize: '0.8rem', color: '#64748b', maxWidth: '380px', margin: '0.25rem auto 0.85rem' }}>
+              Add the subjects or programming topics you need help with. Antigravity will match teachers from the database.
+            </p>
+            <ClayButton size="sm" variant="mint" onClick={() => onNavigate('skills')}>
+              + Add a Wanted Skill
+            </ClayButton>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            {/* Wanted skills chips */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b' }}>Required:</span>
+              {userSkills.wanted.map((w: any) => (
+                <div
+                  key={w.id}
+                  style={{
+                    padding: '0.35rem 0.75rem',
+                    borderRadius: '12px',
+                    background: '#f0fdf4',
+                    border: '1px solid #86efac',
+                    color: '#15803d',
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.35rem'
+                  }}
+                >
+                  <span>🎯 {w.skill_name}</span>
+                  <span style={{ fontSize: '0.68rem', color: '#16a34a', textTransform: 'capitalize' }}>
+                    ({w.experience_level || 'all'})
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Matched Instructors preview */}
+            {matches.length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem', marginTop: '0.35rem' }}>
+                {matches.slice(0, 3).map((m: any, idx: number) => (
+                  <div
+                    key={`${m.teacher_id}_${idx}`}
+                    style={{
+                      padding: '0.75rem 1rem',
+                      borderRadius: '14px',
+                      background: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '0.5rem'
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '0.825rem', fontWeight: 800, color: '#0f172a' }}>
+                        {m.teacher_name}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: '#6366f1', fontWeight: 600 }}>
+                        Offers: {m.skill_name} • {Number(m.credit_rate || 1.0).toFixed(2)} TC/hr
+                      </div>
+                    </div>
+
+                    <ClayButton size="sm" variant="secondary" onClick={() => onNavigate('chat')} icon={<MessageSquare size={13} />}>
+                      Chat
+                    </ClayButton>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </ClayCard>
 
       {/* SQL & DBMS Architecture Highlights */}
       <ClayCard

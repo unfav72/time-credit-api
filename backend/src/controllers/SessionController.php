@@ -291,6 +291,10 @@ class SessionController {
                 $pdo->prepare("UPDATE service_requests SET status = 'Completed' WHERE id = :rid")
                     ->execute(['rid' => $session['request_id']]);
 
+                // Archive the service offer so it automatically disappears from the browse section
+                $pdo->prepare("UPDATE service_offers SET status = 'archived' WHERE id = (SELECT offer_id FROM service_requests WHERE id = :rid)")
+                    ->execute(['rid' => $session['request_id']]);
+
                 $pdo->commit();
 
                 AuthMiddleware::jsonResponse([
@@ -380,6 +384,10 @@ class SessionController {
 
             // Update request
             $pdo->prepare("UPDATE service_requests SET status = 'Completed' WHERE id = :rid")
+                ->execute(['rid' => $session['request_id']]);
+
+            // Archive the service offer so it automatically disappears from the browse section
+            $pdo->prepare("UPDATE service_offers SET status = 'archived' WHERE id = (SELECT offer_id FROM service_requests WHERE id = :rid)")
                 ->execute(['rid' => $session['request_id']]);
 
             $pdo->commit();

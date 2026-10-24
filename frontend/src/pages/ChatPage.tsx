@@ -118,8 +118,14 @@ export const ChatPage: React.FC<ChatPageProps> = ({ currentUser, onNavigate, ini
   const loadAllChatData = async () => {
     try {
       const [convs, friendsData] = await Promise.all([
-        api.getConversations(),
-        api.getFriends()
+        api.getConversations().catch(err => {
+          console.warn('Error fetching conversations:', err);
+          return [];
+        }),
+        api.getFriends().catch(err => {
+          console.warn('Error fetching friends:', err);
+          return { friends: [], pending_received: [], pending_sent: [] };
+        })
       ]);
 
       setConversations(convs);
@@ -227,8 +233,21 @@ export const ChatPage: React.FC<ChatPageProps> = ({ currentUser, onNavigate, ini
   // Accept Friend Request
   const handleAcceptRequest = async (requestId: number) => {
     try {
-      await api.acceptFriendRequest(requestId);
-      loadAllChatData();
+      const res = await api.acceptFriendRequest(requestId);
+      await loadAllChatData();
+      if (res && res.friend) {
+        selectPeer({
+          id: res.friend.id,
+          full_name: res.friend.full_name,
+          email: res.friend.email,
+          bio: res.friend.bio,
+          role: res.friend.role || 'member',
+          is_friend: true
+        });
+        setActiveTab('friends');
+      } else {
+        setActiveTab('friends');
+      }
     } catch (err: any) {
       alert('Error accepting friend request: ' + (err?.message || 'Unknown error'));
     }
@@ -352,8 +371,37 @@ export const ChatPage: React.FC<ChatPageProps> = ({ currentUser, onNavigate, ini
         {/* ================================================================= */}
         {/* LEFT PANEL: CONVERSATIONS, FRIENDS, REQUESTS                      */}
         {/* ================================================================= */}
-        <ClayCard variant="raised" style={{ display: 'flex', flexDirection: 'column', padding: '1.25rem', gap: '1rem' }}>
+        <ClayCard variant="raised" style={{ display: 'flex', flexDirection: 'column', padding: '1.25rem', gap: '0.85rem' }}>
           
+          {/* Prominent Pending Friend Requests Alert Banner */}
+          {pendingReceived.length > 0 && (
+            <div
+              onClick={() => setActiveTab('requests')}
+              style={{
+                padding: '0.65rem 0.85rem',
+                borderRadius: '14px',
+                background: '#f0fdf4',
+                border: '1.5px solid #86efac',
+                color: '#15803d',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                boxShadow: '0 2px 8px rgba(34, 197, 94, 0.15)',
+                transition: 'transform 0.15s ease'
+              }}
+              title="Click to view and accept friend requests"
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', fontWeight: 800 }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />
+                <span>{pendingReceived.length} Friend Request{pendingReceived.length > 1 ? 's' : ''} Received!</span>
+              </div>
+              <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#16a34a', textDecoration: 'underline' }}>
+                Review →
+              </span>
+            </div>
+          )}
+
           {/* 3 Sub-tabs */}
           <div style={{ display: 'flex', background: '#f1f5f9', padding: '0.25rem', borderRadius: '14px', gap: '0.25rem' }}>
             <button

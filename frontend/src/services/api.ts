@@ -655,7 +655,7 @@ class ApiClient {
     });
   }
 
-  async acceptFriendRequest(friendshipId: number): Promise<{ message: string }> {
+  async acceptFriendRequest(friendshipId: number): Promise<{ message: string; friend?: any }> {
     return this.request(`/api/v1/friends/${friendshipId}/accept`, { method: 'POST' });
   }
 

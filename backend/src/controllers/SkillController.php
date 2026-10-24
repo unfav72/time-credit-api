@@ -311,26 +311,29 @@ class SkillController {
         $pdo = Database::getCoreConnection();
 
         $stmt = $pdo->prepare("
-            SELECT 
+            SELECT DISTINCT
+                s.id AS skill_id,
                 s.name AS skill_name,
                 c.name AS category_name,
                 teacher.id AS teacher_id,
                 teacher.full_name AS teacher_name,
                 teacher.email AS teacher_email,
+                teacher.bio AS teacher_bio,
+                COALESCE(offer.experience_level, so.experience_level, 'intermediate') AS experience_level,
                 so.id AS offer_id,
-                so.title AS offer_title,
-                so.credit_rate,
-                so.duration_minutes
+                COALESCE(so.title, '1-on-1 Mentorship & Teaching') AS offer_title,
+                COALESCE(so.credit_rate, 1.00) AS credit_rate,
+                COALESCE(so.duration_minutes, 60) AS duration_minutes
             FROM user_skills want
             JOIN skills s ON want.skill_id = s.id
             JOIN skill_categories c ON s.category_id = c.id
-            JOIN user_skills offer ON offer.skill_id = want.skill_id AND offer.skill_type = 'OFFER'
-            JOIN users teacher ON offer.user_id = teacher.id
-            LEFT JOIN service_offers so ON so.teacher_id = teacher.id AND so.skill_id = s.id AND so.status = 'active'
+            LEFT JOIN user_skills offer ON offer.skill_id = want.skill_id AND offer.skill_type = 'OFFER'
+            LEFT JOIN service_offers so ON so.skill_id = s.id AND so.status = 'active'
+            JOIN users teacher ON (teacher.id = offer.user_id OR teacher.id = so.teacher_id)
             WHERE want.user_id = :current_user_id 
               AND want.skill_type = 'WANT'
               AND teacher.id <> :current_user_id
-            ORDER BY s.name ASC
+            ORDER BY s.name ASC, teacher.full_name ASC
         ");
         $stmt->execute(['current_user_id' => $user['id']]);
         AuthMiddleware::jsonResponse(['matches' => $stmt->fetchAll()]);

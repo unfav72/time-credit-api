@@ -23,7 +23,8 @@ import {
   CalendarCheck,
   Search,
   PlusCircle,
-  PlayCircle
+  PlayCircle,
+  Star
 } from 'lucide-react';
 import { ClayCard } from '../components/clay/ClayCard';
 import { ClayButton } from '../components/clay/ClayButton';
@@ -81,6 +82,15 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const [settleError, setSettleError] = useState<string | null>(null);
   const [settledResult, setSettledResult] = useState<{ credits: number; duration: number } | null>(null);
 
+  // Post-Session Review states
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewHoverRating, setReviewHoverRating] = useState(0);
+  const [reviewComment, setReviewComment] = useState('');
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [reviewSubmitted, setReviewSubmitted] = useState(false);
+  const [completedSessionId, setCompletedSessionId] = useState<number | null>(null);
+  const learnerJoinedAtRef = useRef<number | null>(null);
+
   // In-meeting interactive whiteboard & chat
   const [activeTab, setActiveTab] = useState<'chat' | 'whiteboard' | 'notes'>('whiteboard');
   const [sharedNotes, setSharedNotes] = useState(
@@ -115,13 +125,21 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       setActiveSession(current);
 
       if (current && current.status === 'IN_PROGRESS') {
-        if (current.actual_start_at) {
-          const diff = Math.max(0, Math.floor((Date.now() - new Date(current.actual_start_at).getTime()) / 1000));
-          setElapsedSeconds(diff);
+        const isHostUser = current.teacher_id === currentUser.id || current.teacher_name === currentUser.full_name;
+        const hasJoinedLearner = Boolean(current.learner_id && current.learner_id !== current.teacher_id);
+        if (hasJoinedLearner || !isHostUser) {
+          if (!learnerJoinedAtRef.current) {
+            learnerJoinedAtRef.current = Date.now();
+          }
+          setIsTimerRunning(true);
+        } else {
+          learnerJoinedAtRef.current = null;
+          setElapsedSeconds(0);
+          setIsTimerRunning(false);
         }
-        setIsTimerRunning(true);
         initializeMedia();
       } else {
+        learnerJoinedAtRef.current = null;
         setIsTimerRunning(false);
         stopAllMediaTracks();
       }
@@ -151,15 +169,33 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     }
   }, [cameraActive, hasMediaStream]);
 
+  // Timer runs accurately in the background from learner join to end session
   useEffect(() => {
     let interval: any = null;
-    if (isTimerRunning) {
+    const isHostUser = activeSession?.teacher_id === currentUser.id || activeSession?.teacher_name === currentUser.full_name;
+    const hasJoinedLearner = Boolean(activeSession && activeSession.learner_id && activeSession.learner_id !== activeSession.teacher_id);
+    const peerConnected = connectionStatus === 'connected' || hasRemoteVideo || hasRemoteAudio;
+    const isLearnerPresent = hasJoinedLearner || (!isHostUser) || peerConnected;
+
+    if (isLearnerPresent && activeSession?.status === 'IN_PROGRESS') {
+      if (!learnerJoinedAtRef.current) {
+        learnerJoinedAtRef.current = Date.now();
+      }
+      setIsTimerRunning(true);
       interval = setInterval(() => {
-        setElapsedSeconds(prev => prev + 1);
+        if (learnerJoinedAtRef.current) {
+          const secs = Math.max(0, Math.floor((Date.now() - learnerJoinedAtRef.current) / 1000));
+          setElapsedSeconds(secs);
+        }
       }, 1000);
+    } else {
+      setIsTimerRunning(false);
+      if (!isLearnerPresent && isHostUser && !peerConnected) {
+        setElapsedSeconds(0);
+      }
     }
     return () => clearInterval(interval);
-  }, [isTimerRunning]);
+  }, [activeSession?.status, activeSession?.learner_id, connectionStatus, hasRemoteVideo, hasRemoteAudio]);
 
   // Synchronize local audio/video tracks to active RTCPeerConnection
   const syncLocalTracksToPeer = (stream: MediaStream | null) => {
@@ -294,13 +330,33 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     setMicActive(nextState);
   };
 
+  const stopScreenShare = async () => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(track => {
+        try { track.stop(); } catch {}
+      });
+      screenStreamRef.current = null;
+    }
+    setScreenSharing(false);
+
+    // Revert WebRTC peer connection back to camera track so learner sees camera again
+    if (pcRef.current) {
+      try {
+        const senders = pcRef.current.getSenders();
+        const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+        if (videoSender) {
+          const cameraTrack = streamRef.current?.getVideoTracks()[0] || null;
+          await videoSender.replaceTrack(cameraTrack);
+        }
+      } catch (err) {
+        console.warn('Reverting track error on stop screen share:', err);
+      }
+    }
+  };
+
   const toggleScreenShare = async () => {
     if (screenSharing) {
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(track => track.stop());
-        screenStreamRef.current = null;
-      }
-      setScreenSharing(false);
+      await stopScreenShare();
       return;
     }
 
@@ -318,9 +374,22 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       screenStreamRef.current = screenStream;
       setScreenSharing(true);
 
-      screenStream.getVideoTracks()[0].onended = () => {
-        setScreenSharing(false);
-        screenStreamRef.current = null;
+      const screenTrack = screenStream.getVideoTracks()[0];
+
+      // WebRTC Transmission: Replace the outgoing video track on RTCPeerConnection
+      // so learner receives the screen share live!
+      if (pcRef.current && screenTrack) {
+        const senders = pcRef.current.getSenders();
+        const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+        if (videoSender) {
+          await videoSender.replaceTrack(screenTrack);
+        } else {
+          pcRef.current.addTrack(screenTrack, screenStream);
+        }
+      }
+
+      screenTrack.onended = () => {
+        stopScreenShare();
       };
     } catch (err: any) {
       console.warn('Screen share canceled or failed:', err);
@@ -647,16 +716,20 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const handleEndAndSettle = async () => {
     setSettling(true);
     setSettleError(null);
-    stopAllMediaTracks();
-    setIsTimerRunning(false);
+    const sid = activeSession?.id;
 
     try {
       if (activeSession) {
         const res = await api.completeSession(activeSession.id, elapsedMinutes);
         setSettledResult({ credits: res.transferredCredits, duration: elapsedMinutes });
+        setCompletedSessionId(activeSession.id);
       } else {
         setSettledResult({ credits: accruedCredits, duration: elapsedMinutes });
       }
+
+      stopAllMediaTracks();
+      setIsTimerRunning(false);
+      learnerJoinedAtRef.current = null;
 
       confetti({
         particleCount: 90,
@@ -670,12 +743,42 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     }
   };
 
-  const handleExitClassroom = (targetPage: string = 'dashboard') => {
+  const handleSubmitReview = async () => {
+    if (!completedSessionId) return;
+    setReviewSubmitting(true);
+    try {
+      await api.submitReview(completedSessionId, reviewRating, reviewComment.trim());
+      setReviewSubmitted(true);
+      confetti({
+        particleCount: 60,
+        spread: 50,
+        origin: { y: 0.7 }
+      });
+      setTimeout(() => {
+        handleExitClassroom('classroom');
+      }, 1500);
+    } catch (err: any) {
+      alert('Error submitting review: ' + (err?.message || 'Failed saving review'));
+    } finally {
+      setReviewSubmitting(false);
+    }
+  };
+
+  const handleExitClassroom = (targetPage: string = 'classroom') => {
     stopAllMediaTracks();
     setIsTimerRunning(false);
+    learnerJoinedAtRef.current = null;
     setSettleModalOpen(false);
     setActiveSession(null);
-    onNavigate(targetPage);
+    setSettledResult(null);
+    setElapsedSeconds(0);
+    setReviewSubmitted(false);
+    setReviewComment('');
+    setReviewRating(5);
+    setCompletedSessionId(null);
+    if (targetPage !== 'classroom') {
+      onNavigate(targetPage);
+    }
   };
 
   const handleStartHostSession = async () => {
@@ -699,7 +802,8 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         status: 'IN_PROGRESS'
       });
       setElapsedSeconds(0);
-      setIsTimerRunning(true);
+      learnerJoinedAtRef.current = null;
+      setIsTimerRunning(false);
       await initializeMedia();
     } catch (err: any) {
       alert('Error starting live session: ' + err?.message);
@@ -1507,28 +1611,111 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
           {settledResult ? (
-            <div style={{ textAlign: 'center', padding: '1rem 0' }}>
-              <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'var(--pastel-mint-bg)', color: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem', boxShadow: 'inset 2px 2px 4px rgba(255,255,255,0.8)' }}>
-                <CheckCircle2 size={36} />
+            <div style={{ textAlign: 'center', padding: '0.5rem 0' }}>
+              <div style={{ width: '56px', height: '56px', borderRadius: '50%', background: 'var(--pastel-mint-bg)', color: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 0.75rem', boxShadow: 'inset 2px 2px 4px rgba(255,255,255,0.8)' }}>
+                <CheckCircle2 size={32} />
               </div>
-              <h3 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#0f172a' }}>
+              <h3 style={{ fontSize: '1.35rem', fontWeight: 800, color: '#0f172a' }}>
                 Session Successfully Ended!
               </h3>
-              <p style={{ color: '#475569', fontSize: '0.95rem', marginTop: '0.5rem', lineHeight: 1.5 }}>
-                Completed <strong>{settledResult.duration} minutes</strong> of live instruction.
-                <br />
-                Settled <strong>{Number(settledResult.credits || 0).toFixed(2)} TimeCredits</strong> via atomic database transaction.
+              <p style={{ color: '#475569', fontSize: '0.875rem', marginTop: '0.25rem', lineHeight: 1.5 }}>
+                Completed <strong>{settledResult.duration} minutes</strong> • Settled <strong>{Number(settledResult.credits || 0).toFixed(2)} TC</strong> via atomic transaction.
               </p>
 
-              <div style={{ marginTop: '1.5rem', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '0.75rem' }}>
-                <ClayButton variant="primary" onClick={() => handleExitClassroom('wallet')}>
-                  View Wallet & Ledger
+              {/* POST-SESSION REVIEW OPTION */}
+              <div style={{ marginTop: '1.25rem', padding: '1.25rem', borderRadius: '18px', background: '#f8fafc', border: '1.5px solid #e2e8f0', textAlign: 'left' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <Star size={18} color="#f59e0b" fill="#f59e0b" />
+                    <strong style={{ fontSize: '0.95rem', color: '#0f172a' }}>Rate Your Peer's Work</strong>
+                  </div>
+                  <ClayBadge variant="lavender">Post-Session Review</ClayBadge>
+                </div>
+                <p style={{ fontSize: '0.8rem', color: '#64748b', margin: '0 0 0.75rem' }}>
+                  Rate the work and mentorship of <strong>{remoteUserName}</strong>. Your feedback is stored in PostgreSQL and displayed on their public instructor profile.
+                </p>
+
+                {reviewSubmitted ? (
+                  <div style={{ padding: '0.85rem', borderRadius: '12px', background: '#f0fdf4', border: '1px solid #86efac', color: '#166534', textAlign: 'center', fontSize: '0.85rem', fontWeight: 700 }}>
+                    ✓ Thank you! Your review has been saved to the database.
+                  </div>
+                ) : (
+                  <>
+                    {/* Star Rating Input */}
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', margin: '0.5rem 0' }}>
+                      {[1, 2, 3, 4, 5].map(star => {
+                        const isFilled = star <= (reviewHoverRating || reviewRating);
+                        return (
+                          <button
+                            key={star}
+                            type="button"
+                            onMouseEnter={() => setReviewHoverRating(star)}
+                            onMouseLeave={() => setReviewHoverRating(0)}
+                            onClick={() => setReviewRating(star)}
+                            style={{
+                              border: 'none',
+                              background: 'transparent',
+                              cursor: 'pointer',
+                              padding: '2px',
+                              color: isFilled ? '#f59e0b' : '#cbd5e1',
+                              transition: 'transform 0.15s ease'
+                            }}
+                            title={`Rate ${star} star${star > 1 ? 's' : ''}`}
+                          >
+                            <Star size={30} fill={isFilled ? '#f59e0b' : 'none'} />
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ textAlign: 'center', fontSize: '0.8rem', fontWeight: 700, color: '#f59e0b', marginBottom: '0.75rem' }}>
+                      {reviewRating === 5 ? '⭐⭐⭐⭐⭐ Exceptional (5 / 5)' :
+                       reviewRating === 4 ? '⭐⭐⭐⭐ Very Good (4 / 5)' :
+                       reviewRating === 3 ? '⭐⭐⭐ Average (3 / 5)' :
+                       reviewRating === 2 ? '⭐⭐ Needs Improvement (2 / 5)' : '⭐ Unsatisfactory (1 / 5)'}
+                    </div>
+
+                    <textarea
+                      value={reviewComment}
+                      onChange={(e) => setReviewComment(e.target.value)}
+                      placeholder="Share your thoughts on the teaching clarity, knowledge depth, problem solving, and patience..."
+                      style={{
+                        width: '100%',
+                        borderRadius: '12px',
+                        border: '1px solid #cbd5e1',
+                        padding: '0.65rem',
+                        minHeight: '65px',
+                        fontSize: '0.825rem',
+                        outline: 'none',
+                        background: '#ffffff',
+                        fontFamily: 'inherit'
+                      }}
+                    />
+
+                    <div style={{ marginTop: '0.75rem', display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                      <ClayButton
+                        size="sm"
+                        variant="primary"
+                        onClick={handleSubmitReview}
+                        disabled={reviewSubmitting}
+                        icon={<Sparkles size={14} />}
+                      >
+                        {reviewSubmitting ? 'Saving Review...' : 'Submit Review'}
+                      </ClayButton>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Exit navigation options */}
+              <div style={{ marginTop: '1.25rem', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '0.65rem' }}>
+                <ClayButton variant="secondary" onClick={() => handleExitClassroom('classroom')}>
+                  Return to Empty Classroom
                 </ClayButton>
                 <ClayButton variant="secondary" onClick={() => handleExitClassroom('dashboard')}>
                   Return to Dashboard
                 </ClayButton>
-                <ClayButton variant="secondary" onClick={() => handleExitClassroom('sessions')}>
-                  View Sessions
+                <ClayButton variant="primary" onClick={() => handleExitClassroom('wallet')}>
+                  View Wallet & Ledger
                 </ClayButton>
               </div>
             </div>

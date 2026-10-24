@@ -194,7 +194,19 @@ class ChatController {
             'uid1' => $myId, 'uid2' => $myId, 'uid3' => $myId, 'uid4' => $myId, 'uid5' => $myId,
             'my_id' => $myId, 'my_id2' => $myId
         ]);
-        $friends = $fStmt->fetchAll();
+        $rawFriends = $fStmt->fetchAll();
+        $friends = array_map(function($f) {
+            return [
+                'friendship_id' => (int)$f['friendship_id'],
+                'user_id' => (int)$f['user_id'],
+                'full_name' => $f['full_name'],
+                'email' => $f['email'],
+                'bio' => $f['bio'] ?? '',
+                'role' => $f['role'] ?? 'member',
+                'status' => $f['status'] ?? 'ACCEPTED',
+                'friends_since' => $f['friends_since'] ?? date('c'),
+            ];
+        }, $rawFriends);
 
         // 2. Pending Requests Received (I need to accept/decline)
         $rStmt = $pdo->prepare("
@@ -212,7 +224,17 @@ class ChatController {
             'my_id2' => $myId,
             'my_id3' => $myId
         ]);
-        $pendingReceived = $rStmt->fetchAll();
+        $rawPendingReceived = $rStmt->fetchAll();
+        $pendingReceived = array_map(function($r) {
+            return [
+                'request_id' => (int)$r['request_id'],
+                'sender_id' => (int)$r['sender_id'],
+                'sender_name' => $r['sender_name'],
+                'sender_email' => $r['sender_email'],
+                'sender_bio' => $r['sender_bio'] ?? '',
+                'created_at' => $r['created_at'] ?? date('c'),
+            ];
+        }, $rawPendingReceived);
 
         // 3. Pending Requests Sent (waiting for them)
         $sStmt = $pdo->prepare("
@@ -231,7 +253,16 @@ class ChatController {
             'uid1' => $myId, 'uid2' => $myId, 'uid3' => $myId,
             'my_id' => $myId
         ]);
-        $pendingSent = $sStmt->fetchAll();
+        $rawPendingSent = $sStmt->fetchAll();
+        $pendingSent = array_map(function($s) {
+            return [
+                'request_id' => (int)$s['request_id'],
+                'receiver_id' => (int)$s['receiver_id'],
+                'receiver_name' => $s['receiver_name'],
+                'receiver_email' => $s['receiver_email'],
+                'created_at' => $s['created_at'] ?? date('c'),
+            ];
+        }, $rawPendingSent);
 
         AuthMiddleware::jsonResponse([
             'friends' => $friends,
@@ -345,11 +376,25 @@ class ChatController {
             $notif->execute([
                 'uid' => $otherId,
                 'title' => 'Friend Request Accepted',
-                'msg' => $user['full_name'] . ' accepted your friend request! You can now chat directly.'
+                'msg' => $user['full_name'] . ' accepted your friend request! You can now chat in real-time.'
             ]);
         } catch (\Throwable $nErr) {}
 
-        AuthMiddleware::jsonResponse(['message' => 'Friend request accepted! You are now connected.']);
+        $otherStmt = $pdo->prepare('SELECT id, full_name, email, bio, role FROM users WHERE id = :id');
+        $otherStmt->execute(['id' => $otherId]);
+        $otherUser = $otherStmt->fetch();
+
+        AuthMiddleware::jsonResponse([
+            'message' => 'Friend request accepted! You are now connected.',
+            'friend' => $otherUser ? [
+                'id' => (int)$otherUser['id'],
+                'full_name' => $otherUser['full_name'],
+                'email' => $otherUser['email'],
+                'bio' => $otherUser['bio'] ?? '',
+                'role' => $otherUser['role'] ?? 'member',
+                'is_friend' => true
+            ] : null
+        ]);
     }
 
     /**
@@ -458,7 +503,7 @@ class ChatController {
 
         // Get all unique peers that current user has exchanged messages with OR are accepted friends with
         $stmt = $pdo->prepare("
-            SELECT DISTINCT u.id AS peer_id, u.full_name, u.email, u.bio, u.role,
+            SELECT u.id AS peer_id, u.full_name, u.email, u.bio, u.role,
                    (
                        SELECT dm.message 
                        FROM direct_messages dm 
@@ -499,7 +544,7 @@ class ChatController {
                         AND f.status = 'ACCEPTED'
                   )
               )
-            ORDER BY (CASE WHEN last_message_time IS NULL THEN 1 ELSE 0 END), last_message_time DESC, full_name ASC
+            ORDER BY last_message_time DESC NULLS LAST, u.full_name ASC
         ");
         $stmt->execute([
             'uid1' => $myId, 'uid2' => $myId, 'uid3' => $myId, 'uid4' => $myId, 'uid5' => $myId,
@@ -507,7 +552,21 @@ class ChatController {
             'uid10' => $myId, 'uid11' => $myId
         ]);
 
-        $conversations = $stmt->fetchAll();
+        $rawConversations = $stmt->fetchAll();
+        $conversations = array_map(function($c) {
+            return [
+                'peer_id' => (int)$c['peer_id'],
+                'full_name' => $c['full_name'],
+                'email' => $c['email'],
+                'bio' => $c['bio'] ?? '',
+                'role' => $c['role'] ?? 'member',
+                'last_message' => $c['last_message'] ?? null,
+                'last_message_time' => $c['last_message_time'] ?? null,
+                'unread_count' => (int)($c['unread_count'] ?? 0),
+                'is_friend' => !empty($c['is_friend']) && $c['is_friend'] !== '0' && $c['is_friend'] !== false,
+            ];
+        }, $rawConversations);
+
         AuthMiddleware::jsonResponse(['conversations' => $conversations]);
     }
 
