@@ -46,6 +46,9 @@ class Database {
                 $config['options'] ?? []
             );
 
+            // Force ERRMODE_EXCEPTION unconditionally across all drivers
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
             // Set explicit UTC timezone for PostgreSQL & MySQL
             if ($driver === 'pgsql') {
                 $pdo->exec("SET TIME ZONE 'UTC'");
@@ -97,13 +100,26 @@ class Database {
                 $trimmed .= " RETURNING {$column}";
             }
             $stmt = $pdo->prepare($trimmed);
-            $stmt->execute($params);
+            $res = $stmt->execute($params);
+            if ($res === false) {
+                $err = $stmt->errorInfo();
+                throw new RuntimeException("PostgreSQL INSERT execute error: " . ($err[2] ?? json_encode($err)));
+            }
             $id = $stmt->fetchColumn();
-            return ($id !== false && is_numeric($id)) ? (int)$id : 0;
+            if ($id === false) {
+                $err = $stmt->errorInfo();
+                throw new RuntimeException("PostgreSQL RETURNING id fetchColumn error: " . ($err[2] ?? 'No ID returned'));
+            }
+            $stmt->closeCursor();
+            return (int)$id;
         }
 
         $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
+        $res = $stmt->execute($params);
+        if ($res === false) {
+            $err = $stmt->errorInfo();
+            throw new RuntimeException("INSERT execute error: " . ($err[2] ?? json_encode($err)));
+        }
         $id = $pdo->lastInsertId();
         return ($id !== false && is_numeric($id)) ? (int)$id : 0;
     }
