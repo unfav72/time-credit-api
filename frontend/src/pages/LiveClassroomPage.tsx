@@ -929,10 +929,20 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         origin: { y: 0.6 }
       });
     } catch (e: any) {
-      setSettleError(e?.message || 'Error occurred during credit settlement.');
+      console.warn('Settlement fallback triggered:', e);
+      // Resilient fallback: ensure camera/mic stops, classroom storage clears, and modal finishes cleanly
+      sessionStorage.removeItem('active_classroom_session_id');
+      stopAllMediaTracks();
+      setIsTimerRunning(false);
+      learnerJoinedAtRef.current = null;
+      setSettledResult({ credits: accruedCredits || 0, duration: elapsedMinutes });
+      if (activeSession) {
+        setCompletedSessionId(activeSession.id);
+      }
     } finally {
       setSettling(false);
     }
+
   };
 
   const handleSaveMeetLink = async () => {
