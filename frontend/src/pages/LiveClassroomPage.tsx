@@ -1185,6 +1185,9 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         description: hostDesc || 'Live interactive online teaching and learning session.'
       });
       setHostModalOpen(false);
+      if (res?.session_id) {
+        sessionStorage.setItem('active_classroom_session_id', String(res.session_id));
+      }
       setActiveSession({
         ...res.session,
         credit_rate: hostRate,

@@ -284,11 +284,11 @@ class ApiClient {
     });
   }
 
-  async acceptRequest(requestId: number): Promise<{ roomId: string }> {
-    const res = await this.request<{ message: string; room_id: string }>(`/api/v1/requests/${requestId}/accept`, {
+  async acceptRequest(requestId: number): Promise<{ roomId: string; session_id?: number }> {
+    const res = await this.request<{ message: string; room_id: string; session_id?: number }>(`/api/v1/requests/${requestId}/accept`, {
       method: 'POST'
     });
-    return { roomId: res.room_id };
+    return { roomId: res.room_id, session_id: res.session_id };
   }
 
   async rejectRequest(requestId: number): Promise<void> {
@@ -301,7 +301,8 @@ class ApiClient {
       ...s,
       credit_rate: Number(s.credit_rate != null ? s.credit_rate : 1.0),
       settled_credits: Number(s.settled_credits != null ? s.settled_credits : 0),
-      rating: s.rating != null ? Number(s.rating) : undefined
+      rating: s.rating != null ? Number(s.rating) : undefined,
+      received_rating: s.received_rating != null ? Number(s.received_rating) : undefined
     }));
   }
 
@@ -312,7 +313,8 @@ class ApiClient {
       ...s,
       credit_rate: Number(s.credit_rate != null ? s.credit_rate : 1.0),
       settled_credits: Number(s.settled_credits != null ? s.settled_credits : 0),
-      rating: s.rating != null ? Number(s.rating) : undefined
+      rating: s.rating != null ? Number(s.rating) : undefined,
+      received_rating: s.received_rating != null ? Number(s.received_rating) : undefined
     };
   }
 

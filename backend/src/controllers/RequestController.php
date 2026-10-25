@@ -108,6 +108,10 @@ class RequestController {
         $user = AuthMiddleware::requireAuth();
         $pdo = Database::getCoreConnection();
 
+        Database::syncSequence($pdo, 'service_requests');
+        Database::syncSequence($pdo, 'sessions');
+        Database::syncSequence($pdo, 'notifications');
+
         $stmt = $pdo->prepare('SELECT * FROM service_requests WHERE id = :id');
         $stmt->execute(['id' => $requestId]);
         $req = $stmt->fetch();
@@ -117,7 +121,7 @@ class RequestController {
             return;
         }
 
-        if ($req['status'] !== 'Pending') {
+        if ($req['status'] !== 'Pending' && $req['status'] !== 'Accepted') {
             AuthMiddleware::jsonResponse(['error' => 'Only Pending requests can be accepted.'], 400);
             return;
         }
@@ -125,37 +129,76 @@ class RequestController {
         $pdo->beginTransaction();
         try {
             // Update request
-            $update = $pdo->prepare("UPDATE service_requests SET status = 'Accepted' WHERE id = :id");
+            $update = $pdo->prepare("UPDATE service_requests SET status = 'Accepted', updated_at = NOW() WHERE id = :id");
             $update->execute(['id' => $requestId]);
 
-            // Create live session record
-            $startAt = $req['proposed_start_at'];
-            $endAt = date('Y-m-d H:i:s', strtotime($startAt . " + {$req['requested_duration_minutes']} minutes"));
-            $roomId = 'timecredit-room-' . bin2hex(random_bytes(6));
+            // Create or update live session record
+            $startAt = !empty($req['proposed_start_at']) ? $req['proposed_start_at'] : date('Y-m-d H:i:s');
+            $duration = max(15, (int)($req['requested_duration_minutes'] ?: 60));
+            $endAt = date('Y-m-d H:i:s', strtotime($startAt . " + {$duration} minutes"));
+            $roomId = 'tc-live-' . bin2hex(random_bytes(5));
 
-            $sessStmt = $pdo->prepare("
-                INSERT INTO sessions (request_id, teacher_id, learner_id, scheduled_start_at, scheduled_end_at, meeting_room_id, status)
-                VALUES (:request_id, :teacher_id, :learner_id, :start_at, :end_at, :room_id, 'SCHEDULED')
-            ");
-            $sessStmt->execute([
-                'request_id' => $requestId,
-                'teacher_id' => $req['teacher_id'],
-                'learner_id' => $req['learner_id'],
-                'start_at' => $startAt,
-                'end_at' => $endAt,
-                'room_id' => $roomId
-            ]);
+            $chk = $pdo->prepare('SELECT id FROM sessions WHERE request_id = :rid');
+            $chk->execute(['rid' => $requestId]);
+            $existingId = $chk->fetchColumn();
+
+            $sessionId = 0;
+            if ($existingId) {
+                $sessionId = (int)$existingId;
+                $pdo->prepare("UPDATE sessions SET status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()), updated_at = NOW() WHERE id = :id")
+                    ->execute(['id' => $sessionId]);
+            } else {
+                $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+                if ($driver === 'pgsql') {
+                    $sessStmt = $pdo->prepare("
+                        INSERT INTO sessions (request_id, teacher_id, learner_id, scheduled_start_at, scheduled_end_at, actual_start_at, meeting_room_id, status)
+                        VALUES (:request_id, :teacher_id, :learner_id, :start_at, :end_at, NOW(), :room_id, 'IN_PROGRESS')
+                        ON CONFLICT (request_id) DO UPDATE SET status = 'IN_PROGRESS', actual_start_at = COALESCE(sessions.actual_start_at, NOW()), updated_at = NOW()
+                        RETURNING id
+                    ");
+                    $sessStmt->execute([
+                        'request_id' => $requestId,
+                        'teacher_id' => $req['teacher_id'],
+                        'learner_id' => $req['learner_id'],
+                        'start_at' => $startAt,
+                        'end_at' => $endAt,
+                        'room_id' => $roomId
+                    ]);
+                    $sessionId = (int)$sessStmt->fetchColumn();
+                } else {
+                    $sessStmt = $pdo->prepare("
+                        INSERT INTO sessions (request_id, teacher_id, learner_id, scheduled_start_at, scheduled_end_at, actual_start_at, meeting_room_id, status)
+                        VALUES (:request_id, :teacher_id, :learner_id, :start_at, :end_at, NOW(), :room_id, 'IN_PROGRESS')
+                    ");
+                    $sessStmt->execute([
+                        'request_id' => $requestId,
+                        'teacher_id' => $req['teacher_id'],
+                        'learner_id' => $req['learner_id'],
+                        'start_at' => $startAt,
+                        'end_at' => $endAt,
+                        'room_id' => $roomId
+                    ]);
+                    $sessionId = (int)$pdo->lastInsertId();
+                    if ($sessionId <= 0) {
+                        $sessionId = (int)$pdo->query("SELECT id FROM sessions WHERE request_id = {$requestId}")->fetchColumn();
+                    }
+                }
+            }
 
             // Notify learner
             $notif = $pdo->prepare('INSERT INTO notifications (user_id, title, message) VALUES (:uid, :title, :msg)');
             $notif->execute([
                 'uid' => $req['learner_id'],
                 'title' => 'Session Request Accepted!',
-                'msg' => $user['full_name'] . ' accepted your session request. Meeting room: ' . $roomId
+                'msg' => $user['full_name'] . ' accepted your session request. Your live classroom is now open and ready!'
             ]);
 
             $pdo->commit();
-            AuthMiddleware::jsonResponse(['message' => 'Request accepted and live session scheduled!', 'room_id' => $roomId]);
+            AuthMiddleware::jsonResponse([
+                'message' => 'Request accepted and live session scheduled!',
+                'session_id' => $sessionId,
+                'room_id' => $roomId
+            ]);
         } catch (\Exception $e) {
             $pdo->rollBack();
             AuthMiddleware::jsonResponse(['error' => 'Failed to accept session: ' . $e->getMessage()], 500);

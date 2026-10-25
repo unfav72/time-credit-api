@@ -36,9 +36,13 @@ export const ServiceRequestsPage: React.FC<ServiceRequestsPageProps> = ({ curren
 
   const handleAccept = async (id: number) => {
     try {
-      await api.acceptRequest(id);
+      const res = await api.acceptRequest(id);
+      if (res?.session_id) {
+        sessionStorage.setItem('active_classroom_session_id', String(res.session_id));
+      }
       await loadRequests();
-      alert('Request accepted! Live session scheduled.');
+      alert('Request accepted! Entering live classroom...');
+      onNavigate('classroom');
     } catch (e: any) {
       alert('Error: ' + e?.message);
     }
@@ -176,7 +180,17 @@ export const ServiceRequestsPage: React.FC<ServiceRequestsPageProps> = ({ curren
                   )}
 
                   {req.status === 'Accepted' && (
-                    <ClayButton size="sm" variant="primary" onClick={() => onNavigate('classroom')} icon={<Video size={14} />}>
+                    <ClayButton
+                      size="sm"
+                      variant="primary"
+                      onClick={() => {
+                        if (req.session_id) {
+                          sessionStorage.setItem('active_classroom_session_id', String(req.session_id));
+                        }
+                        onNavigate('classroom');
+                      }}
+                      icon={<Video size={14} />}
+                    >
                       Join Live Classroom
                     </ClayButton>
                   )}

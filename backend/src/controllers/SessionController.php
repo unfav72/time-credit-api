@@ -15,28 +15,60 @@ class SessionController {
         $user = AuthMiddleware::requireAuth();
         $pdo = Database::getCoreConnection();
 
-        $stmt = $pdo->prepare("
-            SELECT s.*, 
-                   COALESCE(so.title, 'Live Teaching Class') AS offer_title, 
-                   COALESCE(so.credit_rate, 1.00) AS credit_rate,
-                   COALESCE(sk.name, 'General Skill Exchange') AS skill_name,
-                   teacher.full_name AS teacher_name, teacher.email AS teacher_email,
-                   COALESCE(learner.full_name, 'Learner') AS learner_name, COALESCE(learner.email, '') AS learner_email,
-                   r.rating, r.comment AS review_comment
-            FROM sessions s
-            LEFT JOIN service_requests sr ON s.request_id = sr.id
-            LEFT JOIN service_offers so ON sr.offer_id = so.id
-            LEFT JOIN skills sk ON so.skill_id = sk.id
-            LEFT JOIN users teacher ON s.teacher_id = teacher.id
-            LEFT JOIN users learner ON s.learner_id = learner.id
-            LEFT JOIN reviews r ON r.session_id = s.id AND r.reviewer_id = :uid
-            WHERE s.teacher_id = :uid 
-               OR s.learner_id = :uid
-               OR EXISTS (SELECT 1 FROM session_participants sp WHERE sp.session_id = s.id AND sp.user_id = :uid)
-            ORDER BY s.scheduled_start_at DESC
-        ");
-        $stmt->execute(['uid' => $user['id']]);
-        AuthMiddleware::jsonResponse(['sessions' => $stmt->fetchAll()]);
+        try {
+            $hasParticipantsTable = false;
+            try {
+                $check = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_name = 'session_participants'")->fetchColumn();
+                $hasParticipantsTable = !empty($check);
+            } catch (\Throwable $ignored) {}
+
+            $hasReviewsTable = false;
+            try {
+                $rCheck = $pdo->query("SELECT 1 FROM information_schema.tables WHERE table_name = 'reviews'")->fetchColumn();
+                $hasReviewsTable = !empty($rCheck);
+            } catch (\Throwable $ignored) {}
+
+            $participantsClause = $hasParticipantsTable 
+                ? "OR EXISTS (SELECT 1 FROM session_participants sp WHERE sp.session_id = s.id AND sp.user_id = :uid)"
+                : "";
+
+            $reviewsSelect = $hasReviewsTable
+                ? "r.rating, r.comment AS review_comment, r_other.rating AS received_rating, r_other.comment AS received_comment,"
+                : "NULL AS rating, NULL AS review_comment, NULL AS received_rating, NULL AS received_comment,";
+
+            $reviewsJoin = $hasReviewsTable
+                ? "LEFT JOIN reviews r ON r.session_id = s.id AND r.reviewer_id = :uid
+                   LEFT JOIN reviews r_other ON r_other.session_id = s.id AND r_other.reviewer_id != :uid"
+                : "";
+
+            $stmt = $pdo->prepare("
+                SELECT s.*, 
+                       COALESCE(so.title, 'Live Teaching Class') AS offer_title, 
+                       COALESCE(so.credit_rate, 1.00) AS credit_rate,
+                       COALESCE(sk.name, 'General Skill Exchange') AS skill_name,
+                       teacher.full_name AS teacher_name, teacher.email AS teacher_email,
+                       COALESCE(learner.full_name, 'Learner') AS learner_name, COALESCE(learner.email, '') AS learner_email,
+                       {$reviewsSelect}
+                       s.id AS id
+                FROM sessions s
+                LEFT JOIN service_requests sr ON s.request_id = sr.id
+                LEFT JOIN service_offers so ON sr.offer_id = so.id
+                LEFT JOIN skills sk ON so.skill_id = sk.id
+                LEFT JOIN users teacher ON s.teacher_id = teacher.id
+                LEFT JOIN users learner ON s.learner_id = learner.id
+                {$reviewsJoin}
+                WHERE s.teacher_id = :uid 
+                   OR s.learner_id = :uid
+                   {$participantsClause}
+                ORDER BY 
+                   CASE WHEN s.status = 'IN_PROGRESS' THEN 1 WHEN s.status = 'SCHEDULED' THEN 2 ELSE 3 END,
+                   COALESCE(s.actual_start_at, s.scheduled_start_at, s.created_at) DESC
+            ");
+            $stmt->execute(['uid' => $user['id']]);
+            AuthMiddleware::jsonResponse(['sessions' => $stmt->fetchAll()]);
+        } catch (\Throwable $e) {
+            AuthMiddleware::jsonResponse(['sessions' => [], 'error' => $e->getMessage()], 200);
+        }
     }
 
     /**
@@ -111,6 +143,12 @@ class SessionController {
                 $skillId = (int)$pdo->query('SELECT id FROM skills ORDER BY id ASC LIMIT 1')->fetchColumn() ?: 1;
             }
         }
+
+        Database::syncSequence($pdo, 'skills');
+        Database::syncSequence($pdo, 'service_offers');
+        Database::syncSequence($pdo, 'service_requests');
+        Database::syncSequence($pdo, 'sessions');
+        Database::syncSequence($pdo, 'session_participants');
 
         $pdo->beginTransaction();
         try {
@@ -219,6 +257,12 @@ class SessionController {
                 $updReq->execute(['uid' => $currentUserId, 'rid' => $session['request_id']]);
             }
             $learnerId = $currentUserId;
+        } else {
+            // Teacher entering classroom: activate SCHEDULED session to IN_PROGRESS
+            if ($session['status'] === 'SCHEDULED') {
+                $upd = $pdo->prepare("UPDATE sessions SET status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()), updated_at = NOW() WHERE id = :id");
+                $upd->execute(['id' => $sessionId]);
+            }
         }
 
         // Record participant entry safely

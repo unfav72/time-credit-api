@@ -96,6 +96,8 @@ export interface Session {
   learner_email?: string;
   rating?: number;
   review_comment?: string;
+  received_rating?: number;
+  received_comment?: string;
 }
 
 export interface TopUpPackage {
