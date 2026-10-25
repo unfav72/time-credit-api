@@ -116,6 +116,42 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const [completedSessionId, setCompletedSessionId] = useState<number | null>(null);
   const learnerJoinedAtRef = useRef<number | null>(null);
 
+  // Real-time automatic TimeCredit streaming and balance status
+  const [liveStreamingStatus, setLiveStreamingStatus] = useState<{ delta: number; total: number; timestamp: number } | null>(null);
+  const [insufficientCreditsWarning, setInsufficientCreditsWarning] = useState(false);
+
+  // Persistent Session Start Time across page changes, tab switches, and reloads
+  const getPersistedSessionStartTime = (sessionId: number, actualStartAt?: string | null): number | null => {
+    if (!sessionId) return null;
+    const storageKey = `tc_session_start_${sessionId}`;
+    const stored = localStorage.getItem(storageKey);
+    if (stored) {
+      const parsed = parseInt(stored, 10);
+      if (!isNaN(parsed) && parsed > 0 && parsed <= Date.now()) {
+        return parsed;
+      }
+    }
+
+    if (actualStartAt) {
+      const serverTime = new Date(actualStartAt).getTime();
+      if (!isNaN(serverTime) && serverTime > 0 && serverTime <= Date.now()) {
+        localStorage.setItem(storageKey, String(serverTime));
+        return serverTime;
+      }
+    }
+
+    return null;
+  };
+
+  const ensureSessionStartTime = (sessionId: number, actualStartAt?: string | null): number => {
+    let startTime = getPersistedSessionStartTime(sessionId, actualStartAt);
+    if (!startTime) {
+      startTime = Date.now();
+      localStorage.setItem(`tc_session_start_${sessionId}`, String(startTime));
+    }
+    return startTime;
+  };
+
   // In-meeting interactive whiteboard & chat
   const [activeTab, setActiveTab] = useState<'chat' | 'whiteboard' | 'notes'>('whiteboard');
   const [sharedNotes, setSharedNotes] = useState(
@@ -186,6 +222,9 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       // If no active session or if completed, clear storage and show empty classroom:
       if (!current || current.status === 'COMPLETED' || current.status === 'CANCELLED') {
         sessionStorage.removeItem('active_classroom_session_id');
+        if (current) {
+          localStorage.removeItem(`tc_session_start_${current.id}`);
+        }
         setActiveSession(null);
         learnerJoinedAtRef.current = null;
         setIsTimerRunning(false);
@@ -197,21 +236,31 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         if (current.status === 'IN_PROGRESS') {
           const isHostUser = current.teacher_id === currentUser.id || current.teacher_name === currentUser.full_name;
           const hasJoinedLearner = Boolean(current.learner_id && current.learner_id !== current.teacher_id);
+          const isLearnerPresent = hasJoinedLearner || !isHostUser;
 
           // Auto-join learner when entering classroom so learner_id is bound in database
           if (!isHostUser) {
             api.joinSession(current.id).catch(console.warn);
           }
 
-          if (hasJoinedLearner || !isHostUser) {
-            if (!learnerJoinedAtRef.current) {
-              learnerJoinedAtRef.current = Date.now();
-            }
+          if (isLearnerPresent) {
+            const startTs = ensureSessionStartTime(current.id, current.actual_start_at);
+            learnerJoinedAtRef.current = startTs;
+            const initialElapsed = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
+            setElapsedSeconds(initialElapsed);
             setIsTimerRunning(true);
           } else {
-            learnerJoinedAtRef.current = null;
-            setElapsedSeconds(0);
-            setIsTimerRunning(false);
+            // Solo host waiting for learner; check if previously running
+            const existingStart = getPersistedSessionStartTime(current.id, current.actual_start_at);
+            if (existingStart) {
+              learnerJoinedAtRef.current = existingStart;
+              setElapsedSeconds(Math.max(0, Math.floor((Date.now() - existingStart) / 1000)));
+              setIsTimerRunning(true);
+            } else {
+              learnerJoinedAtRef.current = null;
+              setElapsedSeconds(0);
+              setIsTimerRunning(false);
+            }
           }
         } else {
           learnerJoinedAtRef.current = null;
@@ -246,7 +295,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     }
   }, [cameraActive, hasMediaStream]);
 
-  // Timer runs accurately in the background from learner join to end session
+  // Timer runs continuously in the background across tab switches and page navigations
   useEffect(() => {
     let interval: any = null;
     const isHostUser = activeSession?.teacher_id === currentUser.id || activeSession?.teacher_name === currentUser.full_name;
@@ -254,25 +303,93 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     const peerConnected = connectionStatus === 'connected' || hasRemoteVideo || hasRemoteAudio;
     const isLearnerPresent = hasJoinedLearner || (!isHostUser) || peerConnected;
 
-    if (isLearnerPresent && activeSession?.status === 'IN_PROGRESS') {
-      if (!learnerJoinedAtRef.current) {
-        learnerJoinedAtRef.current = Date.now();
-      }
-      setIsTimerRunning(true);
-      interval = setInterval(() => {
-        if (learnerJoinedAtRef.current) {
-          const secs = Math.max(0, Math.floor((Date.now() - learnerJoinedAtRef.current) / 1000));
+    if (activeSession?.status === 'IN_PROGRESS') {
+      const persistedStart = getPersistedSessionStartTime(activeSession.id, activeSession.actual_start_at);
+
+      if (isLearnerPresent || persistedStart) {
+        const startTs = ensureSessionStartTime(activeSession.id, activeSession.actual_start_at);
+        learnerJoinedAtRef.current = startTs;
+        setIsTimerRunning(true);
+
+        // Immediate sync
+        const currentElapsed = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
+        setElapsedSeconds(currentElapsed);
+
+        // Synchronize anchor with peer
+        api.sendSignal(activeSession.id, 'session-time-sync', { start_time: startTs }).catch(() => {});
+
+        interval = setInterval(() => {
+          const activeStart = getPersistedSessionStartTime(activeSession.id, activeSession.actual_start_at) || startTs;
+          const secs = Math.max(0, Math.floor((Date.now() - activeStart) / 1000));
           setElapsedSeconds(secs);
+        }, 1000);
+      } else {
+        setIsTimerRunning(false);
+        if (isHostUser && !peerConnected) {
+          setElapsedSeconds(0);
         }
-      }, 1000);
+      }
     } else {
       setIsTimerRunning(false);
-      if (!isLearnerPresent && isHostUser && !peerConnected) {
-        setElapsedSeconds(0);
-      }
     }
+
     return () => clearInterval(interval);
-  }, [activeSession?.status, activeSession?.learner_id, connectionStatus, hasRemoteVideo, hasRemoteAudio]);
+  }, [activeSession?.id, activeSession?.status, activeSession?.learner_id, connectionStatus, hasRemoteVideo, hasRemoteAudio]);
+
+  // Real-time automatic TimeCredit streaming deduction from learner to teacher
+  useEffect(() => {
+    if (!activeSession || activeSession.status !== 'IN_PROGRESS') return;
+
+    const isHostUser = activeSession.teacher_id === currentUser.id || activeSession.teacher_name === currentUser.full_name;
+    const hasJoinedLearner = Boolean(activeSession.learner_id && activeSession.learner_id !== activeSession.teacher_id);
+    const peerConnected = connectionStatus === 'connected' || hasRemoteVideo || hasRemoteAudio;
+    const isLearnerPresent = hasJoinedLearner || (!isHostUser) || peerConnected;
+
+    // Only stream credits when learner is present and at least 15s elapsed
+    if (!isLearnerPresent || elapsedSeconds < 15) return;
+
+    const streamSettlement = async () => {
+      try {
+        const res = await api.autoSettleSession(activeSession.id, elapsedSeconds);
+        if (res.success) {
+          if (res.insufficient_credits) {
+            setInsufficientCreditsWarning(true);
+          } else {
+            setInsufficientCreditsWarning(false);
+          }
+
+          if (res.delta_settled > 0) {
+            setLiveStreamingStatus({
+              delta: res.delta_settled,
+              total: res.total_settled,
+              timestamp: Date.now()
+            });
+
+            setActiveSession(prev => prev ? { ...prev, settled_credits: res.total_settled } : null);
+
+            if (isHostUser && res.teacher_balance != null) {
+              currentUser.balance = res.teacher_balance;
+            } else if (!isHostUser && res.learner_balance != null) {
+              currentUser.balance = res.learner_balance;
+            }
+
+            api.sendSignal(activeSession.id, 'credit-stream-settled', {
+              delta: res.delta_settled,
+              total: res.total_settled,
+              teacher_balance: res.teacher_balance,
+              learner_balance: res.learner_balance,
+              insufficient_credits: res.insufficient_credits
+            }).catch(() => {});
+          }
+        }
+      } catch (err) {
+        console.warn('[Classroom] Auto-settle stream error:', err);
+      }
+    };
+
+    const interval = setInterval(streamSettlement, 25000);
+    return () => clearInterval(interval);
+  }, [activeSession?.id, activeSession?.status, activeSession?.learner_id, elapsedSeconds, connectionStatus]);
 
   // Synchronize local audio/video tracks to active RTCPeerConnection
   const syncLocalTracksToPeer = (stream: MediaStream | null) => {
@@ -803,6 +920,38 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 queuedCandidates.push(payload);
               }
             }
+          } else if (sig.signal_type === 'session-time-sync') {
+            if (payload?.start_time && typeof payload.start_time === 'number') {
+              const peerStart = payload.start_time;
+              const localStart = getPersistedSessionStartTime(activeSession.id, activeSession.actual_start_at);
+              if (!localStart || peerStart < localStart) {
+                localStorage.setItem(`tc_session_start_${activeSession.id}`, String(peerStart));
+                learnerJoinedAtRef.current = peerStart;
+                const secs = Math.max(0, Math.floor((Date.now() - peerStart) / 1000));
+                setElapsedSeconds(secs);
+              }
+            }
+          } else if (sig.signal_type === 'credit-stream-settled') {
+            if (payload?.total != null) {
+              setActiveSession(prev => prev ? { ...prev, settled_credits: payload.total } : null);
+            }
+            if (payload?.delta != null && payload.delta > 0) {
+              setLiveStreamingStatus({
+                delta: payload.delta,
+                total: payload.total,
+                timestamp: Date.now()
+              });
+            }
+            if (isHost && payload?.teacher_balance != null) {
+              currentUser.balance = payload.teacher_balance;
+            } else if (!isHost && payload?.learner_balance != null) {
+              currentUser.balance = payload.learner_balance;
+            }
+            if (payload?.insufficient_credits) {
+              setInsufficientCreditsWarning(true);
+            } else {
+              setInsufficientCreditsWarning(false);
+            }
           } else if (sig.signal_type === 'google-meet-updated') {
             if (payload?.meeting_link) {
               setActiveSession(prev => prev ? { ...prev, meeting_room_id: payload.meeting_link } : null);
@@ -810,6 +959,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
           } else if (sig.signal_type === 'session-ended') {
             console.log('[WebRTC] Peer notified that session has completed and settled:', payload);
             sessionStorage.removeItem('active_classroom_session_id');
+            localStorage.removeItem(`tc_session_start_${activeSession.id}`);
             const creds = Number(payload?.credits ?? accruedCredits);
             const dur = Number(payload?.duration ?? elapsedMinutes);
             setSettledResult({ credits: creds, duration: dur });
@@ -867,8 +1017,10 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
 
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   const elapsedSecsRemainder = elapsedSeconds % 60;
-  const creditRate = activeSession?.credit_rate || 1.0;
-  const accruedCredits = Math.round((elapsedMinutes / 60.0) * creditRate * 100) / 100;
+  const creditRate = Number(activeSession?.credit_rate || 1.0);
+  const theoreticalAccrued = Math.round((elapsedSeconds / 3600.0) * creditRate * 100) / 100;
+  const settledCredits = Number(activeSession?.settled_credits || 0);
+  const accruedCredits = Math.max(settledCredits, theoreticalAccrued);
 
   // Periodic poll to detect if meeting was ended/completed by peer on the server
   useEffect(() => {
@@ -880,11 +1032,12 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         if (s && (s.status === 'COMPLETED' || s.status === 'CANCELLED')) {
           console.log('[Classroom] Server session marked COMPLETED:', s.id);
           sessionStorage.removeItem('active_classroom_session_id');
+          localStorage.removeItem(`tc_session_start_${s.id}`);
           stopAllMediaTracks();
           setIsTimerRunning(false);
           learnerJoinedAtRef.current = null;
           setActiveSession(null);
-          setSettledResult({ credits: accruedCredits, duration: elapsedMinutes });
+          setSettledResult({ credits: Math.max(Number(s.settled_credits || 0), accruedCredits), duration: elapsedMinutes });
           setCompletedSessionId(s.id);
           setSettleModalOpen(true);
         }
@@ -903,6 +1056,9 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
 
     try {
       sessionStorage.removeItem('active_classroom_session_id');
+      if (activeSession) {
+        localStorage.removeItem(`tc_session_start_${activeSession.id}`);
+      }
 
       if (activeSession) {
         const res = await api.completeSession(activeSession.id, elapsedMinutes);
@@ -995,6 +1151,9 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
 
   const handleExitClassroom = (targetPage: string = 'classroom') => {
     sessionStorage.removeItem('active_classroom_session_id');
+    if (activeSession) {
+      localStorage.removeItem(`tc_session_start_${activeSession.id}`);
+    }
     stopAllMediaTracks();
     setIsTimerRunning(false);
     learnerJoinedAtRef.current = null;
@@ -1366,24 +1525,89 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             </span>
           </div>
 
-          {/* Accrued Credits */}
+          {/* Role-Based Credit Accrual Badge */}
+          {isHost ? (
+            <div
+              style={{
+                padding: '0.45rem 0.95rem',
+                borderRadius: '16px',
+                background: 'var(--pastel-mint-bg)',
+                color: '#059669',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                fontWeight: 800,
+                fontSize: '0.95rem',
+                boxShadow: 'var(--clay-shadow-btn)'
+              }}
+              title="Real-time earnings streaming from learner to your wallet. Settled every 25 seconds."
+            >
+              <Coins size={16} />
+              <span>+{Number(accruedCredits || 0).toFixed(2)} TC</span>
+            </div>
+          ) : (
+            <div
+              style={{
+                padding: '0.45rem 0.95rem',
+                borderRadius: '16px',
+                background: 'var(--pastel-amber-bg)',
+                color: 'var(--pastel-amber-text)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                fontWeight: 800,
+                fontSize: '0.95rem',
+                boxShadow: 'var(--clay-shadow-btn)'
+              }}
+              title="Real-time cost streaming from your balance to instructor according to timer."
+            >
+              <Coins size={16} />
+              <span>-{Number(accruedCredits || 0).toFixed(2)} TC</span>
+            </div>
+          )}
+
+          {/* Live Streaming Pill */}
+          {liveStreamingStatus && (Date.now() - liveStreamingStatus.timestamp < 12000) && (
+            <div
+              style={{
+                padding: '0.35rem 0.75rem',
+                borderRadius: '12px',
+                background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                color: '#ffffff',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                fontSize: '0.775rem',
+                fontWeight: 700,
+                boxShadow: '0 2px 8px rgba(16, 185, 129, 0.4)'
+              }}
+              title="Automatic background credit transfer committed to database ledger"
+            >
+              <Sparkles size={13} />
+              <span>Streamed {liveStreamingStatus.delta > 0 ? `+${liveStreamingStatus.delta.toFixed(2)} TC` : 'Active'}</span>
+            </div>
+          )}
+
+          {/* User Live Balance Pill */}
           <div
             style={{
-              padding: '0.45rem 0.95rem',
+              padding: '0.45rem 0.85rem',
               borderRadius: '16px',
-              background: 'var(--pastel-amber-bg)',
-              color: 'var(--pastel-amber-text)',
+              background: '#f1f5f9',
+              border: '1px solid #cbd5e1',
+              color: '#334155',
+              fontSize: '0.85rem',
+              fontWeight: 700,
               display: 'flex',
               alignItems: 'center',
-              gap: '0.45rem',
-              fontWeight: 800,
-              fontSize: '0.95rem',
-              boxShadow: 'var(--clay-shadow-btn)'
+              gap: '0.4rem'
             }}
-            title={isHost ? "Earnings accruing in real-time. Settled to your wallet when student ends session." : "Cost accruing in real-time. 1 Hour = 1.00 TimeCredit"}
+            title="Your current available wallet balance"
           >
-            <Coins size={16} />
-            <span>+{Number(accruedCredits || 0).toFixed(2)} TC</span>
+            <span>Balance:</span>
+            <strong style={{ color: currentUser.balance < 0.2 ? '#dc2626' : '#0f172a' }}>
+              {Number(currentUser.balance || 0).toFixed(2)} TC
+            </strong>
           </div>
 
           {/* Action button based on role: Learner ends & settles, Teacher leaves or closes solo */}
@@ -1429,6 +1653,42 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
           )}
         </div>
       </ClayCard>
+
+      {/* Depleted Balance Alert Banner */}
+      {insufficientCreditsWarning && (
+        <div
+          style={{
+            padding: '0.85rem 1.25rem',
+            borderRadius: '16px',
+            background: 'linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%)',
+            border: '1.5px solid #f87171',
+            color: '#991b1b',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem',
+            boxShadow: '0 4px 12px rgba(239, 68, 68, 0.15)'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+            <AlertCircle size={20} color="#dc2626" />
+            <div>
+              <strong style={{ fontSize: '0.9rem' }}>TimeCredit Balance Depleted (0.00 TC):</strong>
+              <span style={{ fontSize: '0.85rem', marginLeft: '0.4rem' }}>
+                The learner's credit balance has reached 0.00 TC. Please top up your wallet to continue learning without disruption.
+              </span>
+            </div>
+          </div>
+          <ClayButton
+            size="sm"
+            variant="primary"
+            onClick={() => onNavigate('topup')}
+            icon={<Coins size={14} />}
+          >
+            Top Up Credits
+          </ClayButton>
+        </div>
+      )}
 
       {/* Main Classroom Workspace Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: '1.25rem', alignItems: 'start' }}>

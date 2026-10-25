@@ -361,6 +361,10 @@ class SessionController {
         $input = AuthMiddleware::getJsonInput();
         $pdo = Database::getCoreConnection();
 
+        try {
+            $pdo->exec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS settled_credits NUMERIC(10, 2) NOT NULL DEFAULT 0.00");
+        } catch (\Throwable $e) {}
+
         // 1. Reset any dangling transaction on connection
         while ($pdo->inTransaction()) {
             try { $pdo->rollBack(); } catch (\Throwable $rb) { break; }
@@ -377,7 +381,8 @@ class SessionController {
             SELECT s.*, 
                    COALESCE(so.credit_rate, 1.00) AS credit_rate, 
                    COALESCE(so.id, sr.offer_id, 0) AS offer_id,
-                   so.title AS offer_title
+                   so.title AS offer_title,
+                   COALESCE(s.settled_credits, 0.00) AS already_settled
             FROM sessions s
             LEFT JOIN service_requests sr ON s.request_id = sr.id
             LEFT JOIN service_offers so ON sr.offer_id = so.id
@@ -394,7 +399,7 @@ class SessionController {
         if ($session['status'] === 'COMPLETED') {
             AuthMiddleware::jsonResponse([
                 'message' => 'Session is already completed.',
-                'credits_transferred' => 0.00,
+                'credits_transferred' => (float)($session['settled_credits'] ?? 0.00),
                 'duration_minutes' => (int)($session['eligible_duration_minutes'] ?? $durationMinutes)
             ]);
             return;
@@ -424,14 +429,18 @@ class SessionController {
         Database::syncSequence($pdo, 'notifications');
         Database::syncSequence($pdo, 'sessions');
 
-        // Calculate credit transfer: 0 for 0-minute sessions or solo sessions
+        // Calculate credit transfer
         $isPeerSession = ($learnerId > 0 && $learnerId !== $teacherId);
         $creditRate = (float)($session['credit_rate'] ?? 1.00);
-        $transferAmount = 0.00;
+        $alreadySettled = (float)($session['already_settled'] ?? 0.00);
+
+        $totalDue = 0.00;
         if ($isPeerSession && $durationMinutes > 0) {
-            $calculated = round(($durationMinutes / 60.0) * $creditRate, 2);
-            $transferAmount = max(0.10, $calculated);
+            $totalDue = round(($durationMinutes / 60.0) * $creditRate, 2);
         }
+
+        // Remaining delta to settle at completion
+        $remainingTransfer = max(0.00, round($totalDue - $alreadySettled, 2));
 
         // Reset connection again right before transaction block
         try {
@@ -446,7 +455,7 @@ class SessionController {
         // Begin transaction
         $pdo->beginTransaction();
         try {
-            if ($transferAmount > 0.00 && $isPeerSession) {
+            if ($remainingTransfer > 0.00 && $isPeerSession) {
                 // Ensure credit accounts exist with ON CONFLICT DO NOTHING
                 $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
                     ->execute(['uid' => $learnerId]);
@@ -463,16 +472,16 @@ class SessionController {
 
                 if ($learnerAcc && $teacherAcc) {
                     $avail = (float)$learnerAcc['balance'];
-                    if ($avail < $transferAmount) {
+                    if ($avail < $remainingTransfer) {
                         if ($avail <= 0.00) {
                             $pdo->prepare('UPDATE credit_accounts SET balance = 1.00, updated_at = NOW() WHERE id = :id')
                                 ->execute(['id' => $learnerAcc['id']]);
                             $avail = 1.00;
                         }
-                        $transferAmount = min($transferAmount, $avail);
+                        $remainingTransfer = min($remainingTransfer, $avail);
                     }
 
-                    if ($transferAmount > 0.00) {
+                    if ($remainingTransfer > 0.00) {
                         $checkKey = $pdo->prepare('SELECT id FROM credit_transactions WHERE idempotency_key = :key');
                         $checkKey->execute(['key' => $idempotencyKey]);
                         $existingTxn = $checkKey->fetchColumn();
@@ -489,30 +498,33 @@ class SessionController {
                             $pdo->prepare("
                                 INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
                                 VALUES (:txn_id, :acc_id, 'DEBIT', :amount)
-                            ")->execute(['txn_id' => $txnId, 'acc_id' => $learnerAcc['id'], 'amount' => $transferAmount]);
+                            ")->execute(['txn_id' => $txnId, 'acc_id' => $learnerAcc['id'], 'amount' => $remainingTransfer]);
 
                             $pdo->prepare("
                                 INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
                                 VALUES (:txn_id, :acc_id, 'CREDIT', :amount)
-                            ")->execute(['txn_id' => $txnId, 'acc_id' => $teacherAcc['id'], 'amount' => $transferAmount]);
+                            ")->execute(['txn_id' => $txnId, 'acc_id' => $teacherAcc['id'], 'amount' => $remainingTransfer]);
 
                             $pdo->prepare('UPDATE credit_accounts SET balance = GREATEST(0.00, balance - :amount), updated_at = NOW() WHERE id = :id')
-                                ->execute(['amount' => $transferAmount, 'id' => $learnerAcc['id']]);
+                                ->execute(['amount' => $remainingTransfer, 'id' => $learnerAcc['id']]);
 
                             $pdo->prepare('UPDATE credit_accounts SET balance = balance + :amount, updated_at = NOW() WHERE id = :id')
-                                ->execute(['amount' => $transferAmount, 'id' => $teacherAcc['id']]);
+                                ->execute(['amount' => $remainingTransfer, 'id' => $teacherAcc['id']]);
                         }
                     }
                 }
             }
 
+            // Total settled across the whole session (auto-settled + completion remainder)
+            $finalSettledCredits = round($alreadySettled + $remainingTransfer, 2);
+
             // Update session status to COMPLETED
             $updSess = $pdo->prepare("
                 UPDATE sessions 
-                SET status = 'COMPLETED', actual_end_at = NOW(), eligible_duration_minutes = :dur, updated_at = NOW() 
+                SET status = 'COMPLETED', actual_end_at = NOW(), eligible_duration_minutes = :dur, settled_credits = :settled, updated_at = NOW() 
                 WHERE id = :id
             ");
-            $updSess->execute(['dur' => $durationMinutes, 'id' => $sessionId]);
+            $updSess->execute(['dur' => $durationMinutes, 'settled' => $finalSettledCredits, 'id' => $sessionId]);
 
             // Update service request status to Completed
             if (!empty($session['request_id'])) {
@@ -531,13 +543,13 @@ class SessionController {
 
             // Insert real-time notifications for both teacher and learner AFTER successful commit
             try {
-                if ($transferAmount > 0.00 && $isPeerSession) {
+                if ($finalSettledCredits > 0.00 && $isPeerSession) {
                     $pdo->prepare("
                         INSERT INTO notifications (user_id, title, message)
                         VALUES (:uid, 'TimeCredits Received!', :msg)
                     ")->execute([
                         'uid' => $teacherId,
-                        'msg' => sprintf('You earned +%.2f TimeCredits for your teaching session (%d mins). Credits are now available in your wallet!', $transferAmount, $durationMinutes)
+                        'msg' => sprintf('You earned +%.2f TimeCredits for your teaching session (%d mins). Credits are now available in your wallet!', $finalSettledCredits, $durationMinutes)
                     ]);
 
                     $pdo->prepare("
@@ -545,14 +557,14 @@ class SessionController {
                         VALUES (:uid, 'Session Concluded & Credits Settled', :msg)
                     ")->execute([
                         'uid' => $learnerId,
-                        'msg' => sprintf('Your live class concluded. %.2f TC was transferred to your instructor. Please leave a review!', $transferAmount)
+                        'msg' => sprintf('Your live class concluded. %.2f TC was transferred to your instructor. Please leave a review!', $finalSettledCredits)
                     ]);
                 }
             } catch (\Throwable $notifErr) {}
 
             AuthMiddleware::jsonResponse([
                 'message' => 'Session successfully completed and TimeCredits settled!',
-                'credits_transferred' => $transferAmount,
+                'credits_transferred' => $finalSettledCredits,
                 'duration_minutes' => $durationMinutes
             ]);
         } catch (\Throwable $e) {
@@ -577,11 +589,192 @@ class SessionController {
 
             AuthMiddleware::jsonResponse([
                 'message' => 'Session concluded successfully.',
-                'credits_transferred' => 0.00,
+                'credits_transferred' => $alreadySettled,
                 'duration_minutes' => $durationMinutes
             ]);
         }
     }
+
+    /**
+     * POST /api/v1/sessions/{id}/auto-settle
+     * Streams real-time credit deduction from learner to teacher while session is active.
+     */
+    public static function autoSettle(int $sessionId): void {
+        $user = AuthMiddleware::requireAuth();
+        $input = AuthMiddleware::getJsonInput();
+        $pdo = Database::getCoreConnection();
+
+        try {
+            $pdo->exec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS settled_credits NUMERIC(10, 2) NOT NULL DEFAULT 0.00");
+        } catch (\Throwable $e) {}
+
+        $elapsedSeconds = max(0, (int)($input['elapsed_seconds'] ?? 0));
+
+        $stmt = $pdo->prepare("
+            SELECT s.*, 
+                   COALESCE(so.credit_rate, 1.00) AS credit_rate,
+                   COALESCE(s.settled_credits, 0.00) AS already_settled
+            FROM sessions s
+            LEFT JOIN service_requests sr ON s.request_id = sr.id
+            LEFT JOIN service_offers so ON sr.offer_id = so.id
+            WHERE s.id = :id
+        ");
+        $stmt->execute(['id' => $sessionId]);
+        $session = $stmt->fetch();
+
+        if (!$session || $session['status'] !== 'IN_PROGRESS') {
+            AuthMiddleware::jsonResponse([
+                'success' => false,
+                'status' => $session ? $session['status'] : 'NOT_FOUND',
+                'delta_settled' => 0.00,
+                'total_settled' => (float)($session['already_settled'] ?? 0.00)
+            ]);
+            return;
+        }
+
+        $teacherId = (int)$session['teacher_id'];
+        $learnerId = (int)$session['learner_id'];
+
+        if ($learnerId <= 0 || $learnerId === $teacherId) {
+            AuthMiddleware::jsonResponse([
+                'success' => true,
+                'is_peer_session' => false,
+                'delta_settled' => 0.00,
+                'total_settled' => 0.00,
+                'insufficient_credits' => false
+            ]);
+            return;
+        }
+
+        $creditRate = (float)$session['credit_rate'];
+        $alreadySettled = (float)$session['already_settled'];
+
+        // Hourly rate: 1 hr (3600s) = creditRate TimeCredits
+        $totalDue = round(($elapsedSeconds / 3600.0) * $creditRate, 2);
+        $delta = round($totalDue - $alreadySettled, 2);
+
+        Database::syncSequence($pdo, 'credit_accounts');
+        Database::syncSequence($pdo, 'credit_transactions');
+        Database::syncSequence($pdo, 'credit_ledger_entries');
+
+        try {
+            $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
+                ->execute(['uid' => $learnerId]);
+            $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
+                ->execute(['uid' => $teacherId]);
+        } catch (\Throwable $e) {}
+
+        while ($pdo->inTransaction()) {
+            try { $pdo->rollBack(); } catch (\Throwable $rb) { break; }
+        }
+        try { $pdo->exec('ROLLBACK'); } catch (\Throwable $ignored) {}
+
+        $pdo->beginTransaction();
+        try {
+            $lStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :uid FOR UPDATE');
+            $lStmt->execute(['uid' => $learnerId]);
+            $learnerAcc = $lStmt->fetch();
+
+            $tStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :uid FOR UPDATE');
+            $tStmt->execute(['uid' => $teacherId]);
+            $teacherAcc = $tStmt->fetch();
+
+            if (!$learnerAcc || !$teacherAcc) {
+                $pdo->rollBack();
+                AuthMiddleware::jsonResponse([
+                    'success' => false,
+                    'error' => 'Credit accounts unavailable',
+                    'delta_settled' => 0.00,
+                    'total_settled' => $alreadySettled
+                ]);
+                return;
+            }
+
+            $learnerBal = (float)$learnerAcc['balance'];
+            $teacherBal = (float)$teacherAcc['balance'];
+
+            if ($learnerBal <= 0.00) {
+                $pdo->rollBack();
+                AuthMiddleware::jsonResponse([
+                    'success' => true,
+                    'insufficient_credits' => true,
+                    'message' => 'Learner has 0.00 TimeCredits remaining.',
+                    'delta_settled' => 0.00,
+                    'total_settled' => $alreadySettled,
+                    'learner_balance' => 0.00,
+                    'teacher_balance' => $teacherBal
+                ]);
+                return;
+            }
+
+            $actualDelta = 0.00;
+            if ($delta >= 0.01) {
+                $actualDelta = min($delta, $learnerBal);
+
+                if ($actualDelta > 0.00) {
+                    $idempotencyKey = 'STREAM_' . $sessionId . '_' . round($alreadySettled + $actualDelta, 2);
+
+                    $chkKey = $pdo->prepare('SELECT id FROM credit_transactions WHERE idempotency_key = :k');
+                    $chkKey->execute(['k' => $idempotencyKey]);
+                    if (!$chkKey->fetchColumn()) {
+                        $txnId = Database::insertAndGetId($pdo, "
+                            INSERT INTO credit_transactions (session_id, idempotency_key, transaction_type, status)
+                            VALUES (:sid, :k, 'SESSION_SETTLEMENT', 'COMMITTED')
+                        ", [
+                            'sid' => $sessionId,
+                            'k' => $idempotencyKey
+                        ]);
+
+                        $pdo->prepare("
+                            INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
+                            VALUES (:tid, :aid, 'DEBIT', :amt)
+                        ")->execute(['tid' => $txnId, 'aid' => $learnerAcc['id'], 'amt' => $actualDelta]);
+
+                        $pdo->prepare("
+                            INSERT INTO credit_ledger_entries (transaction_id, account_id, entry_type, amount)
+                            VALUES (:tid, :aid, 'CREDIT', :amt)
+                        ")->execute(['tid' => $txnId, 'aid' => $teacherAcc['id'], 'amt' => $actualDelta]);
+
+                        $pdo->prepare('UPDATE credit_accounts SET balance = GREATEST(0.00, balance - :amt), updated_at = NOW() WHERE id = :id')
+                            ->execute(['amt' => $actualDelta, 'id' => $learnerAcc['id']]);
+
+                        $pdo->prepare('UPDATE credit_accounts SET balance = balance + :amt, updated_at = NOW() WHERE id = :id')
+                            ->execute(['amt' => $actualDelta, 'id' => $teacherAcc['id']]);
+
+                        $mins = (int)floor($elapsedSeconds / 60);
+                        $pdo->prepare('UPDATE sessions SET settled_credits = settled_credits + :amt, eligible_duration_minutes = :mins, updated_at = NOW() WHERE id = :id')
+                            ->execute(['amt' => $actualDelta, 'mins' => $mins, 'id' => $sessionId]);
+
+                        $alreadySettled = round($alreadySettled + $actualDelta, 2);
+                        $learnerBal = round(max(0.00, $learnerBal - $actualDelta), 2);
+                        $teacherBal = round($teacherBal + $actualDelta, 2);
+                    }
+                }
+            }
+
+            $pdo->commit();
+
+            AuthMiddleware::jsonResponse([
+                'success' => true,
+                'insufficient_credits' => ($learnerBal <= 0.00),
+                'delta_settled' => $actualDelta,
+                'total_settled' => $alreadySettled,
+                'learner_balance' => $learnerBal,
+                'teacher_balance' => $teacherBal
+            ]);
+        } catch (\Throwable $e) {
+            try { if ($pdo->inTransaction()) $pdo->rollBack(); } catch (\Throwable $rb) {}
+            try { $pdo->exec('ROLLBACK'); } catch (\Throwable $rb2) {}
+
+            AuthMiddleware::jsonResponse([
+                'success' => false,
+                'error' => $e->getMessage(),
+                'delta_settled' => 0.00,
+                'total_settled' => $alreadySettled
+            ]);
+        }
+    }
+
 
     /**
      * POST /api/v1/sessions/{id}/review

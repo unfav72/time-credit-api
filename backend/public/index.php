@@ -367,9 +367,12 @@ try {
         SessionController::updateMeetingLink((int)$matches[1]);
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/complete$#', $requestUri, $matches) && $method === 'POST') {
         SessionController::complete((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)/auto-settle$#', $requestUri, $matches) && $method === 'POST') {
+        SessionController::autoSettle((int)$matches[1]);
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/review$#', $requestUri, $matches) && $method === 'POST') {
         SessionController::review((int)$matches[1]);
     }
+
 
     // --- COLLABORATIVE WHITEBOARD & IN-MEETING CHAT ---
     elseif (preg_match('#^/api/v1/sessions/(\d+)/meeting-config$#', $requestUri, $matches) && $method === 'GET') {

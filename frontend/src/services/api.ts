@@ -300,6 +300,7 @@ class ApiClient {
     return (res.sessions || []).map(s => ({
       ...s,
       credit_rate: Number(s.credit_rate != null ? s.credit_rate : 1.0),
+      settled_credits: Number(s.settled_credits != null ? s.settled_credits : 0),
       rating: s.rating != null ? Number(s.rating) : undefined
     }));
   }
@@ -310,6 +311,7 @@ class ApiClient {
     return {
       ...s,
       credit_rate: Number(s.credit_rate != null ? s.credit_rate : 1.0),
+      settled_credits: Number(s.settled_credits != null ? s.settled_credits : 0),
       rating: s.rating != null ? Number(s.rating) : undefined
     };
   }
@@ -331,6 +333,38 @@ class ApiClient {
       })
     });
     return { transferredCredits: res.credits_transferred };
+  }
+
+  async autoSettleSession(sessionId: number, elapsedSeconds: number): Promise<{
+    success: boolean;
+    insufficient_credits?: boolean;
+    message?: string;
+    delta_settled: number;
+    total_settled: number;
+    learner_balance?: number;
+    teacher_balance?: number;
+  }> {
+    const res = await this.request<{
+      success: boolean;
+      insufficient_credits?: boolean;
+      message?: string;
+      delta_settled: number;
+      total_settled: number;
+      learner_balance?: number;
+      teacher_balance?: number;
+    }>(`/api/v1/sessions/${sessionId}/auto-settle`, {
+      method: 'POST',
+      body: JSON.stringify({ elapsed_seconds: elapsedSeconds })
+    });
+    return {
+      success: Boolean(res.success),
+      insufficient_credits: Boolean(res.insufficient_credits),
+      message: res.message,
+      delta_settled: Number(res.delta_settled != null ? res.delta_settled : 0),
+      total_settled: Number(res.total_settled != null ? res.total_settled : 0),
+      learner_balance: res.learner_balance != null ? Number(res.learner_balance) : undefined,
+      teacher_balance: res.teacher_balance != null ? Number(res.teacher_balance) : undefined,
+    };
   }
 
   async submitReview(sessionId: number, rating: number, comment: string): Promise<void> {
@@ -372,6 +406,7 @@ class ApiClient {
     return (res.live_sessions || []).map(s => ({
       ...s,
       credit_rate: Number(s.credit_rate != null ? s.credit_rate : 1.0),
+      settled_credits: Number(s.settled_credits != null ? s.settled_credits : 0),
       rating: s.rating != null ? Number(s.rating) : undefined
     }));
   }

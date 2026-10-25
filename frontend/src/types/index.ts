@@ -88,6 +88,7 @@ export interface Session {
   status: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'DISPUTED';
   offer_title?: string;
   credit_rate?: number;
+  settled_credits?: number;
   skill_name?: string;
   teacher_name?: string;
   teacher_email?: string;
