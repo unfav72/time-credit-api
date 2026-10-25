@@ -24,7 +24,10 @@ import {
   Search,
   PlusCircle,
   PlayCircle,
-  Star
+  Star,
+  ExternalLink,
+  Copy,
+  Check
 } from 'lucide-react';
 import { ClayCard } from '../components/clay/ClayCard';
 import { ClayButton } from '../components/clay/ClayButton';
@@ -130,6 +133,11 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const [hostDesc, setHostDesc] = useState('');
   const [isHosting, setIsHosting] = useState(false);
 
+  // Google Meet integration states
+  const [googleMeetInput, setGoogleMeetInput] = useState('');
+  const [meetLinkCopied, setMeetLinkCopied] = useState(false);
+  const [isSavingMeetLink, setIsSavingMeetLink] = useState(false);
+
   useEffect(() => {
     loadSession();
 
@@ -149,6 +157,12 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       if (current && current.status === 'IN_PROGRESS') {
         const isHostUser = current.teacher_id === currentUser.id || current.teacher_name === currentUser.full_name;
         const hasJoinedLearner = Boolean(current.learner_id && current.learner_id !== current.teacher_id);
+        
+        // Auto-join learner when entering classroom so learner_id is bound in database
+        if (!isHostUser) {
+          api.joinSession(current.id).catch(console.warn);
+        }
+
         if (hasJoinedLearner || !isHostUser) {
           if (!learnerJoinedAtRef.current) {
             learnerJoinedAtRef.current = Date.now();
@@ -159,7 +173,6 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
           setElapsedSeconds(0);
           setIsTimerRunning(false);
         }
-        initializeMedia();
       } else {
         learnerJoinedAtRef.current = null;
         setIsTimerRunning(false);
@@ -748,6 +761,10 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                 queuedCandidates.push(payload);
               }
             }
+          } else if (sig.signal_type === 'google-meet-updated') {
+            if (payload?.meeting_link) {
+              setActiveSession(prev => prev ? { ...prev, meeting_room_id: payload.meeting_link } : null);
+            }
           } else if (sig.signal_type === 'session-ended') {
             console.log('[WebRTC] Peer notified that session has completed and settled:', payload);
             const creds = Number(payload?.credits ?? accruedCredits);
@@ -845,6 +862,33 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     } finally {
       setSettling(false);
     }
+  };
+
+  const handleSaveMeetLink = async () => {
+    if (!activeSession) return;
+    const link = googleMeetInput.trim();
+    if (!link) {
+      alert('Please enter a Google Meet link or code.');
+      return;
+    }
+    setIsSavingMeetLink(true);
+    try {
+      const res = await api.updateMeetingLink(activeSession.id, link);
+      setActiveSession(prev => prev ? { ...prev, meeting_room_id: res.meeting_room_id } : null);
+      api.sendSignal(activeSession.id, 'google-meet-updated', { meeting_link: res.meeting_room_id }).catch(console.warn);
+      setGoogleMeetInput('');
+      alert('Google Meet link saved and synced with student!');
+    } catch (err: any) {
+      alert('Failed to update Google Meet link: ' + (err?.message || 'Error occurred'));
+    } finally {
+      setIsSavingMeetLink(false);
+    }
+  };
+
+  const handleCopyMeetLink = (url: string) => {
+    navigator.clipboard.writeText(url);
+    setMeetLinkCopied(true);
+    setTimeout(() => setMeetLinkCopied(false), 2500);
   };
 
   const handleSubmitReview = async () => {
@@ -1158,6 +1202,18 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const remoteUserInitial = remoteUserName.charAt(0).toUpperCase();
   const remoteRoleLabel = isHost ? 'Student' : 'Teaching Staff';
 
+  const getCanonicalMeetUrl = (rawLink?: string | null) => {
+    if (!rawLink) return 'https://meet.google.com/new';
+    const trimmed = rawLink.trim();
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
+    if (trimmed.startsWith('meet.google.com/')) return 'https://' + trimmed;
+    if (/^[a-z]{3}-[a-z]{4}-[a-z]{3}$/i.test(trimmed)) return `https://meet.google.com/${trimmed.toLowerCase()}`;
+    if (trimmed.startsWith('tc-live-')) return 'https://meet.google.com/new';
+    return `https://meet.google.com/${trimmed.replace(/^\/+/, '')}`;
+  };
+
+  const canonicalMeetUrl = getCanonicalMeetUrl(activeSession?.meeting_room_id);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       {/* Top Session Status Bar */}
@@ -1298,184 +1354,241 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         {/* Left Column: Real In-Built Video Canvas & Controls */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           
+          {/* Google Meet Classroom Video Hub */}
           <ClayCard
             variant="inset"
             style={{
-              height: '520px',
+              minHeight: '480px',
               position: 'relative',
               borderRadius: '24px',
               overflow: 'hidden',
-              background: '#0a0f1d',
-              border: '2px solid #1e293b',
+              background: 'radial-gradient(ellipse at top, #1e1b4b 0%, #0f172a 75%)',
+              border: '2px solid rgba(99, 102, 241, 0.35)',
               display: 'flex',
-              flexDirection: 'column'
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              padding: '1.75rem',
+              color: '#ffffff',
+              boxShadow: '0 12px 36px rgba(0, 0, 0, 0.45)'
             }}
           >
-            {/* Screen sharing video or main speaker view */}
-            {screenSharing ? (
-              <video
-                ref={screenVideoRef}
-                autoPlay
-                playsInline
-                style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-              />
-            ) : (
-              <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-                
-                {/* Remote WebRTC Peer Video (fills the stage when active) */}
-                <video
-                  ref={remoteVideoRef}
-                  autoPlay
-                  playsInline
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    objectFit: isPeerScreenSharing ? 'contain' : 'cover',
-                    position: 'absolute',
-                    inset: 0,
-                    opacity: hasRemoteVideo ? 1 : 0,
-                    pointerEvents: hasRemoteVideo ? 'auto' : 'none',
-                    zIndex: 1,
-                    transition: 'opacity 0.25s ease'
-                  }}
-                />
-
-                {/* Remote Video HD Streaming Badge */}
-                {hasRemoteVideo && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: '1rem',
-                      left: '1rem',
-                      background: 'rgba(15, 23, 42, 0.85)',
-                      backdropFilter: 'blur(10px)',
-                      padding: '0.45rem 0.95rem',
-                      borderRadius: '14px',
-                      border: '1px solid rgba(255, 255, 255, 0.2)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.5rem',
-                      color: '#ffffff',
-                      fontSize: '0.82rem',
-                      fontWeight: 700,
-                      zIndex: 5
-                    }}
-                  >
-                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: isPeerScreenSharing ? '#38bdf8' : '#22c55e', display: 'inline-block', boxShadow: isPeerScreenSharing ? '0 0 8px #38bdf8' : '0 0 8px #22c55e' }} />
-                    <span>{isPeerScreenSharing ? `🖥️ ${remoteUserName} (Sharing Screen)` : `${remoteUserName} (${remoteRoleLabel})`}</span>
-                  </div>
-                )}
-
-                {/* Remote Participant Avatar Placeholder (shown when remote camera is off or connecting) */}
-                {!hasRemoteVideo && (
-                  <div style={{ textAlign: 'center', color: '#ffffff', zIndex: 1, padding: '1rem' }}>
-                    <div
-                      style={{
-                        width: '104px',
-                        height: '104px',
-                        borderRadius: '50%',
-                        background: isHost
-                          ? 'linear-gradient(135deg, #3b82f6, #1d4ed8)'
-                          : 'linear-gradient(135deg, #6366f1, #4f46e5)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        margin: '0 auto 1.25rem',
-                        boxShadow: '0 8px 30px rgba(99, 102, 241, 0.45)',
-                        fontSize: '2.5rem',
-                        fontWeight: 800,
-                        border: '3px solid rgba(255, 255, 255, 0.8)'
-                      }}
-                    >
-                      {remoteUserInitial}
-                    </div>
-                    <h3 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#ffffff' }}>
-                      {remoteUserName}
-                    </h3>
-                    <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: '0.25rem' }}>
-                      {remoteRoleLabel} • {activeSession.skill_name ? `${activeSession.skill_name} Instruction` : 'Live Peer Teaching'}
-                    </p>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.65rem', marginTop: '0.85rem' }}>
-                      <ClayBadge
-                        variant={connectionStatus === 'connected' ? 'mint' : connectionStatus === 'connecting' ? 'lavender' : 'amber'}
-                        style={{ fontSize: '0.72rem', padding: '0.25rem 0.65rem' }}
-                      >
-                        {connectionStatus === 'connected'
-                          ? '● WEBRTC P2P CONNECTED • CAMERA OFF'
-                          : connectionStatus === 'connecting'
-                          ? '⏳ CONNECTING P2P WEBRTC LINK...'
-                          : '○ WAITING FOR PEER TO ENTER ROOM'}
-                      </ClayBadge>
-
-                      <button
-                        onClick={handleManualReconnect}
-                        style={{
-                          background: 'rgba(99, 102, 241, 0.25)',
-                          border: '1px solid rgba(99, 102, 241, 0.6)',
-                          color: '#ffffff',
-                          borderRadius: '12px',
-                          padding: '0.35rem 0.85rem',
-                          fontSize: '0.75rem',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '0.35rem',
-                          boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
-                        }}
-                        title="Click to force re-negotiate video link between devices"
-                      >
-                        <span>🔄 Connect / Retry Stream</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Local Participant Camera Picture-in-Picture */}
+            {/* Top Bar: Google Meet Live Indicator & Participants */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
                 <div
                   style={{
-                    position: 'absolute',
-                    bottom: '1.25rem',
-                    right: '1.25rem',
-                    width: '180px',
-                    height: '130px',
-                    borderRadius: '18px',
-                    background: '#1e293b',
-                    border: '2px solid rgba(255, 255, 255, 0.8)',
-                    boxShadow: '0 6px 18px rgba(0, 0, 0, 0.5)',
-                    overflow: 'hidden',
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '10px',
+                    background: '#ffffff',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    zIndex: 10
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
                   }}
                 >
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 7V17L19 21V3L12 7Z" fill="#00832d" />
+                    <path d="M3 7.5C3 6.67157 3.67157 6 4.5 6H12V18H4.5C3.67157 18 3 17.3284 3 16.5V7.5Z" fill="#00ac47" />
+                    <path d="M19 8.5L22.5 5.5V18.5L19 15.5V8.5Z" fill="#ea4335" />
+                  </svg>
+                </div>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                    <span style={{ fontWeight: 800, fontSize: '0.95rem', color: '#ffffff' }}>Google Meet Video Room</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(34, 197, 94, 0.2)', border: '1px solid rgba(34, 197, 94, 0.5)', color: '#4ade80', fontSize: '0.7rem', fontWeight: 700, padding: '2px 8px', borderRadius: '12px' }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 6px #22c55e' }} />
+                      READY
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                    Crystal clear audio, camera & screen sharing powered by Google Meet
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: '#cbd5e1' }}>
+                <span>Teacher: <strong style={{ color: '#ffffff' }}>{activeSession.teacher_name}</strong></span>
+                <span>•</span>
+                <span>Student: <strong style={{ color: '#ffffff' }}>{remoteUserName}</strong></span>
+              </div>
+            </div>
+
+            {/* Central Meet Hero Action Hub */}
+            <div style={{ textAlign: 'center', padding: '2rem 1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.25rem' }}>
+              <div
+                style={{
+                  width: '76px',
+                  height: '76px',
+                  borderRadius: '24px',
+                  background: 'linear-gradient(135deg, #00832d, #00ac47)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 8px 24px rgba(0, 172, 71, 0.4)',
+                  color: '#ffffff'
+                }}
+              >
+                <Video size={38} />
+              </div>
+
+              <div>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#ffffff', letterSpacing: '-0.01em', margin: 0 }}>
+                  Enter Live Google Meet Video Call
+                </h2>
+                <p style={{ color: '#94a3b8', fontSize: '0.875rem', maxWidth: '480px', margin: '0.5rem auto 0', lineHeight: 1.5 }}>
+                  Click below to open the dedicated Google Meet call in a new browser tab. Your whiteboard, collaborative notes, and TimeCredit timer continue running right here.
+                </p>
+              </div>
+
+              {/* Active Meeting Room Link Badge */}
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.65rem',
+                  padding: '0.55rem 1.15rem',
+                  borderRadius: '16px',
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  fontSize: '0.85rem',
+                  color: '#e2e8f0',
+                  fontFamily: 'monospace'
+                }}
+              >
+                <span>🔗 {canonicalMeetUrl}</span>
+                <button
+                  type="button"
+                  onClick={() => handleCopyMeetLink(canonicalMeetUrl)}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.15)',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '3px 8px',
+                    color: '#ffffff',
+                    cursor: 'pointer',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}
+                >
+                  {meetLinkCopied ? <Check size={12} color="#4ade80" /> : <Copy size={12} />}
+                  <span>{meetLinkCopied ? 'Copied!' : 'Copy'}</span>
+                </button>
+              </div>
+
+              {/* Primary Call Action Buttons */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.85rem', justifyContent: 'center', marginTop: '0.5rem' }}>
+                <a
+                  href={canonicalMeetUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.65rem',
+                    padding: '0.85rem 1.75rem',
+                    borderRadius: '16px',
+                    background: 'linear-gradient(135deg, #00ac47 0%, #00832d 100%)',
+                    color: '#ffffff',
+                    fontSize: '1rem',
+                    fontWeight: 800,
+                    textDecoration: 'none',
+                    boxShadow: '0 6px 20px rgba(0, 172, 71, 0.45)',
+                    transition: 'transform 0.15s ease'
+                  }}
+                >
+                  <Video size={20} />
+                  <span>Join Video Call on Google Meet</span>
+                  <ExternalLink size={16} />
+                </a>
+
+                <button
+                  type="button"
+                  onClick={() => handleCopyMeetLink(canonicalMeetUrl)}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    padding: '0.85rem 1.35rem',
+                    borderRadius: '16px',
+                    background: 'rgba(255, 255, 255, 0.12)',
+                    border: '1px solid rgba(255, 255, 255, 0.25)',
+                    color: '#ffffff',
+                    fontSize: '0.925rem',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {meetLinkCopied ? <Check size={16} color="#4ade80" /> : <Copy size={16} />}
+                  <span>{meetLinkCopied ? 'Link Copied to Clipboard!' : 'Copy Meeting Link'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Bottom Section: Host Meeting Link Updater */}
+            {isHost && (
+              <div
+                style={{
+                  background: 'rgba(255, 255, 255, 0.06)',
+                  border: '1px solid rgba(255, 255, 255, 0.12)',
+                  borderRadius: '16px',
+                  padding: '1rem 1.25rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.65rem'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <div style={{ fontSize: '0.825rem', fontWeight: 700, color: '#93c5fd' }}>
+                    👑 Host Controls: Set or Change Google Meet Link
+                  </div>
+                  <a
+                    href="https://meet.google.com/new"
+                    target="_blank"
+                    rel="noopener noreferrer"
                     style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'cover',
-                      display: (hasMediaStream && cameraActive) ? 'block' : 'none'
+                      fontSize: '0.75rem',
+                      color: '#67e8f9',
+                      fontWeight: 700,
+                      textDecoration: 'underline',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '3px'
+                    }}
+                  >
+                    <span>🚀 Launch New Google Meet Room</span>
+                    <ExternalLink size={12} />
+                  </a>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <input
+                    type="text"
+                    value={googleMeetInput}
+                    onChange={(e) => setGoogleMeetInput(e.target.value)}
+                    placeholder="Paste Google Meet link (e.g. meet.google.com/abc-defg-hij)"
+                    style={{
+                      flex: 1,
+                      padding: '0.55rem 0.85rem',
+                      borderRadius: '12px',
+                      border: '1px solid rgba(255, 255, 255, 0.2)',
+                      background: 'rgba(0, 0, 0, 0.35)',
+                      color: '#ffffff',
+                      fontSize: '0.85rem',
+                      outline: 'none'
                     }}
                   />
-
-                  {(!hasMediaStream || !cameraActive) && (
-                    <div style={{ textAlign: 'center', color: '#f8fafc', padding: '0.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                      <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: '#38bdf8', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 0.35rem', fontWeight: 800 }}>
-                        {currentUser.full_name.charAt(0)}
-                      </div>
-                      <span style={{ fontSize: '0.75rem', fontWeight: 600 }}>{currentUser.full_name.split(' ')[0]} (You)</span>
-                      <span style={{ fontSize: '0.65rem', color: '#94a3b8', marginTop: '2px' }}>Camera Off</span>
-                    </div>
-                  )}
-
-                  <div style={{ position: 'absolute', bottom: '6px', left: '8px', background: 'rgba(0,0,0,0.65)', padding: '2px 6px', borderRadius: '4px', fontSize: '0.65rem', color: '#ffffff' }}>
-                    {micActive ? '🎤 On' : '🔇 Muted'}
-                  </div>
+                  <ClayButton
+                    variant="primary"
+                    size="sm"
+                    onClick={handleSaveMeetLink}
+                    disabled={isSavingMeetLink || !googleMeetInput.trim()}
+                  >
+                    {isSavingMeetLink ? 'Saving...' : 'Save & Sync'}
+                  </ClayButton>
                 </div>
               </div>
             )}
@@ -1487,140 +1600,137 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             style={{
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
+              justifyContent: 'space-between',
               gap: '1rem',
               padding: '0.85rem 1.5rem',
+              flexWrap: 'wrap'
             }}
           >
-            {/* Mic Toggle */}
-            <button
-              onClick={toggleMic}
-              className="clay-button"
-              style={{
-                width: '46px',
-                height: '46px',
-                borderRadius: '50%',
-                padding: 0,
-                background: micActive ? '#f8fafc' : '#fee2e2',
-                color: micActive ? '#0f172a' : '#ef4444',
-              }}
-              title={micActive ? 'Mute Microphone' : 'Unmute Microphone'}
-            >
-              {micActive ? <Mic size={20} /> : <MicOff size={20} />}
-            </button>
-
-            {/* Camera Toggle */}
-            <button
-              onClick={toggleCamera}
-              className="clay-button"
-              style={{
-                width: '46px',
-                height: '46px',
-                borderRadius: '50%',
-                padding: 0,
-                background: cameraActive ? '#f8fafc' : '#fee2e2',
-                color: cameraActive ? '#0f172a' : '#ef4444',
-              }}
-              title={cameraActive ? 'Turn Off Camera' : 'Turn On Camera'}
-            >
-              {cameraActive ? <Video size={20} /> : <VideoOff size={20} />}
-            </button>
-
-            {/* Screen Share Toggle */}
-            <button
-              onClick={toggleScreenShare}
-              className="clay-button"
-              style={{
-                width: '46px',
-                height: '46px',
-                borderRadius: '50%',
-                padding: 0,
-                background: screenSharing ? 'var(--pastel-mint-bg)' : '#f8fafc',
-                color: screenSharing ? '#059669' : '#0f172a',
-              }}
-              title="Share Screen"
-            >
-              <Share2 size={20} />
-            </button>
-
-            {/* End Call / Leave Dock Button based on role */}
-            {isLearner ? (
-              <button
-                onClick={() => {
-                  setSettledResult(null);
-                  setSettleError(null);
-                  setSettleModalOpen(true);
-                }}
-                className="clay-button"
+            {/* Quick Link Buttons */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <a
+                href={canonicalMeetUrl}
+                target="_blank"
+                rel="noopener noreferrer"
                 style={{
-                  display: 'flex',
+                  display: 'inline-flex',
                   alignItems: 'center',
                   gap: '0.45rem',
                   padding: '0.55rem 1.15rem',
-                  borderRadius: '16px',
-                  background: '#fee2e2',
-                  color: '#dc2626',
+                  borderRadius: '14px',
+                  background: 'linear-gradient(135deg, #00ac47, #00832d)',
+                  color: '#ffffff',
                   fontWeight: 700,
-                  fontSize: '0.875rem'
+                  fontSize: '0.875rem',
+                  textDecoration: 'none',
+                  boxShadow: '0 2px 8px rgba(0, 172, 71, 0.3)'
                 }}
-                title="End Call & Settle Session"
               >
-                <PhoneOff size={18} />
-                <span>End Session & Settle</span>
-              </button>
-            ) : isSoloSession ? (
-              <button
-                onClick={() => {
-                  setSettledResult(null);
-                  setSettleError(null);
-                  setSettleModalOpen(true);
-                }}
-                className="clay-button"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.45rem',
-                  padding: '0.55rem 1.15rem',
-                  borderRadius: '16px',
-                  background: '#f1f5f9',
-                  color: '#475569',
-                  fontWeight: 700,
-                  fontSize: '0.875rem'
-                }}
-                title="Close Broadcast"
-              >
-                <PhoneOff size={18} />
-                <span>Close Broadcast</span>
-              </button>
-            ) : (
-              <button
-                onClick={() => {
-                  if (confirm('Leave classroom? The active session will conclude when the student ends it, and settled TimeCredits will transfer to your wallet.')) {
-                    handleExitClassroom('dashboard');
-                  }
-                }}
-                className="clay-button"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.45rem',
-                  padding: '0.55rem 1.15rem',
-                  borderRadius: '16px',
-                  background: '#f1f5f9',
-                  color: '#475569',
-                  fontWeight: 700,
-                  fontSize: '0.875rem'
-                }}
-                title="Leave classroom and return to dashboard"
-              >
-                <PhoneOff size={18} />
-                <span>Leave Classroom</span>
-              </button>
-            )}
+                <Video size={16} />
+                <span>Open Google Meet</span>
+                <ExternalLink size={14} />
+              </a>
 
-            <ClayButton variant="secondary" onClick={() => setActiveTab(activeTab === 'whiteboard' ? 'chat' : 'whiteboard')}>
-              {activeTab === 'whiteboard' ? 'Open Classroom Chat' : 'Open Interactive Whiteboard'}
-            </ClayButton>
+              <button
+                type="button"
+                onClick={() => handleCopyMeetLink(canonicalMeetUrl)}
+                className="clay-button"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  padding: '0.55rem 0.95rem',
+                  borderRadius: '14px',
+                  background: '#f8fafc',
+                  color: '#334155',
+                  fontWeight: 600,
+                  fontSize: '0.85rem'
+                }}
+              >
+                {meetLinkCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />}
+                <span>{meetLinkCopied ? 'Copied' : 'Copy Link'}</span>
+              </button>
+            </div>
+
+            {/* Session Action: Learner ends & settles, Teacher leaves or closes solo */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {isLearner ? (
+                <button
+                  onClick={() => {
+                    setSettledResult(null);
+                    setSettleError(null);
+                    setSettleModalOpen(true);
+                  }}
+                  className="clay-button"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.45rem',
+                    padding: '0.55rem 1.25rem',
+                    borderRadius: '16px',
+                    background: '#fee2e2',
+                    color: '#dc2626',
+                    fontWeight: 700,
+                    fontSize: '0.875rem'
+                  }}
+                  title="End Call & Settle Session"
+                >
+                  <PhoneOff size={18} />
+                  <span>End Session & Settle</span>
+                </button>
+              ) : isSoloSession ? (
+                <button
+                  onClick={() => {
+                    setSettledResult(null);
+                    setSettleError(null);
+                    setSettleModalOpen(true);
+                  }}
+                  className="clay-button"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.45rem',
+                    padding: '0.55rem 1.25rem',
+                    borderRadius: '16px',
+                    background: '#f1f5f9',
+                    color: '#475569',
+                    fontWeight: 700,
+                    fontSize: '0.875rem'
+                  }}
+                  title="Close Broadcast"
+                >
+                  <PhoneOff size={18} />
+                  <span>Close Broadcast</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    if (confirm('Leave classroom? The active session will conclude when the student ends it, and settled TimeCredits will transfer to your wallet.')) {
+                      handleExitClassroom('dashboard');
+                    }
+                  }}
+                  className="clay-button"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.45rem',
+                    padding: '0.55rem 1.15rem',
+                    borderRadius: '16px',
+                    background: '#f1f5f9',
+                    color: '#475569',
+                    fontWeight: 700,
+                    fontSize: '0.875rem'
+                  }}
+                >
+                  <PhoneOff size={18} />
+                  <span>Leave Classroom</span>
+                </button>
+              )}
+
+              <ClayButton variant="secondary" onClick={() => setActiveTab(activeTab === 'whiteboard' ? 'chat' : 'whiteboard')}>
+                {activeTab === 'whiteboard' ? 'Classroom Chat' : 'Whiteboard'}
+              </ClayButton>
+            </div>
           </ClayCard>
         </div>
 

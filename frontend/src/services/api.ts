@@ -330,6 +330,13 @@ class ApiClient {
     });
   }
 
+  async updateMeetingLink(sessionId: number, meetingLink: string): Promise<{ success: boolean; meeting_room_id: string }> {
+    return this.request<{ success: boolean; meeting_room_id: string }>(`/api/v1/sessions/${sessionId}/meeting-link`, {
+      method: 'PUT',
+      body: JSON.stringify({ meeting_link: meetingLink })
+    });
+  }
+
   async createTeachingSession(data: {
     title: string;
     skill_id?: number;

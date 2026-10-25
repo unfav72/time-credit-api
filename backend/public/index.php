@@ -361,6 +361,8 @@ try {
         SessionController::create();
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/join$#', $requestUri, $matches) && $method === 'POST') {
         SessionController::join((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)/meeting-link$#', $requestUri, $matches) && in_array($method, ['PUT', 'POST'])) {
+        SessionController::updateMeetingLink((int)$matches[1]);
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/complete$#', $requestUri, $matches) && $method === 'POST') {
         SessionController::complete((int)$matches[1]);
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/review$#', $requestUri, $matches) && $method === 'POST') {

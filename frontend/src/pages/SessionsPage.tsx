@@ -121,7 +121,7 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
                     <span>👨‍🏫 Teacher: <strong>{sess.teacher_name}</strong></span>
                     <span>👨‍🎓 Learner: <strong>{sess.learner_name}</strong></span>
                     <span>⏱ Eligible Duration: <strong>{sess.eligible_duration_minutes || 60} mins</strong></span>
-                    <span>🔑 Jitsi Room: <code style={{ fontFamily: 'var(--font-mono)' }}>{sess.meeting_room_id}</code></span>
+                    <span>📹 Google Meet Room: <code style={{ fontFamily: 'var(--font-mono)' }}>{sess.meeting_room_id}</code></span>
                   </div>
 
                   {/* Review snippet if completed */}

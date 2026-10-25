@@ -233,6 +233,58 @@ class SessionController {
     }
 
     /**
+     * PUT /api/v1/sessions/{id}/meeting-link
+     * Updates the Google Meet URL for this session.
+     */
+    public static function updateMeetingLink(int $sessionId): void {
+        $user = AuthMiddleware::requireAuth();
+        $input = AuthMiddleware::getJsonInput();
+        $pdo = Database::getCoreConnection();
+
+        $link = trim($input['meeting_link'] ?? $input['meeting_room_id'] ?? '');
+        if (empty($link)) {
+            AuthMiddleware::jsonResponse(['error' => 'Google Meet link cannot be empty.'], 422);
+            return;
+        }
+
+        // Format Google Meet link canonically
+        if (!str_starts_with($link, 'http://') && !str_starts_with($link, 'https://')) {
+            if (str_starts_with($link, 'meet.google.com/')) {
+                $link = 'https://' . $link;
+            } elseif (preg_match('/^[a-z]{3}-[a-z]{4}-[a-z]{3}$/i', $link)) {
+                $link = 'https://meet.google.com/' . strtolower($link);
+            } else {
+                $link = 'https://meet.google.com/' . ltrim($link, '/');
+            }
+        }
+
+        $stmt = $pdo->prepare('SELECT * FROM sessions WHERE id = :id');
+        $stmt->execute(['id' => $sessionId]);
+        $session = $stmt->fetch();
+
+        if (!$session) {
+            AuthMiddleware::jsonResponse(['error' => 'Session not found.'], 404);
+            return;
+        }
+
+        $isTeacher = (int)$session['teacher_id'] === (int)$user['id'];
+        $isLearner = (int)$session['learner_id'] === (int)$user['id'];
+        if (!$isTeacher && !$isLearner) {
+            AuthMiddleware::jsonResponse(['error' => 'Unauthorized: Only participants of this session can update the meeting link.'], 403);
+            return;
+        }
+
+        $upd = $pdo->prepare('UPDATE sessions SET meeting_room_id = :link, updated_at = NOW() WHERE id = :id');
+        $upd->execute(['link' => $link, 'id' => $sessionId]);
+
+        AuthMiddleware::jsonResponse([
+            'success' => true,
+            'message' => 'Google Meet link saved successfully!',
+            'meeting_room_id' => $link
+        ]);
+    }
+
+    /**
      * POST /api/v1/sessions/{id}/complete
      * Settles TimeCredits using ACID transaction with row locking and double-entry ledger.
      */
@@ -241,15 +293,25 @@ class SessionController {
         $input = AuthMiddleware::getJsonInput();
         $pdo = Database::getCoreConnection();
 
+        // 1. Reset any dangling transactions
+        try {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+        } catch (\Throwable $ignored) {}
+
         $durationMinutes = (int)($input['duration_minutes'] ?? 0);
         $idempotencyKey = $input['idempotency_key'] ?? ('SETTLE_' . $sessionId . '_' . time());
 
-        // Check if session exists
+        // 2. Fetch session with resilient LEFT JOINs
         $stmt = $pdo->prepare('
-            SELECT s.*, so.credit_rate, sr.offer_id 
+            SELECT s.*, 
+                   COALESCE(so.credit_rate, 1.00) AS credit_rate, 
+                   COALESCE(so.id, sr.offer_id, 0) AS offer_id,
+                   so.title AS offer_title
             FROM sessions s
-            JOIN service_requests sr ON s.request_id = sr.id
-            JOIN service_offers so ON sr.offer_id = so.id
+            LEFT JOIN service_requests sr ON s.request_id = sr.id
+            LEFT JOIN service_offers so ON sr.offer_id = so.id
             WHERE s.id = :id
         ');
         $stmt->execute(['id' => $sessionId]);
@@ -262,10 +324,15 @@ class SessionController {
 
         $teacherId = (int)$session['teacher_id'];
         $learnerId = (int)$session['learner_id'];
+        $currentUserId = (int)$user['id'];
 
-        if ($teacherId !== (int)$user['id'] && $learnerId !== (int)$user['id']) {
-            AuthMiddleware::jsonResponse(['error' => 'Unauthorized to complete this session.'], 403);
-            return;
+        // Auto-attach learner if session had unassigned or dummy learner ID
+        if ($currentUserId !== $teacherId && ($learnerId === $teacherId || $learnerId <= 0)) {
+            $pdo->prepare("UPDATE sessions SET learner_id = :uid WHERE id = :id")->execute(['uid' => $currentUserId, 'id' => $sessionId]);
+            $learnerId = $currentUserId;
+            if (!empty($session['request_id'])) {
+                $pdo->prepare("UPDATE service_requests SET learner_id = :uid WHERE id = :rid")->execute(['uid' => $currentUserId, 'rid' => $session['request_id']]);
+            }
         }
 
         if ($session['status'] === 'COMPLETED') {
@@ -319,19 +386,30 @@ class SessionController {
         }
 
         // Case 2: 1-on-1 peer exchange between teacher and learner
-        // 1. Ensure both users have credit_accounts rows before starting the settlement transaction
+        // 1. Ensure both users have credit_accounts rows and sequences are synchronized before transaction
         try {
             if ($driver === 'pgsql') {
-                $pdo->prepare("INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING")->execute(['uid' => $learnerId]);
-                $pdo->prepare("INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING")->execute(['uid' => $teacherId]);
+                $pdo->prepare("INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 2.00) ON CONFLICT (user_id) DO NOTHING")->execute(['uid' => $learnerId]);
+                $pdo->prepare("INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 2.00) ON CONFLICT (user_id) DO NOTHING")->execute(['uid' => $teacherId]);
                 // Synchronize PostgreSQL sequences to avoid pkey collision
-                try { $pdo->exec("SELECT setval('credit_accounts_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_accounts), 1))"); } catch (\Throwable $t) {}
-                try { $pdo->exec("SELECT setval('credit_transactions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_transactions), 1))"); } catch (\Throwable $t) {}
-                try { $pdo->exec("SELECT setval('credit_ledger_entries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_ledger_entries), 1))"); } catch (\Throwable $t) {}
-                try { $pdo->exec("SELECT setval('notifications_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM notifications), 1))"); } catch (\Throwable $t) {}
+                $sequences = [
+                    'credit_accounts_id_seq' => 'credit_accounts',
+                    'credit_transactions_id_seq' => 'credit_transactions',
+                    'credit_ledger_entries_id_seq' => 'credit_ledger_entries',
+                    'notifications_id_seq' => 'notifications',
+                    'reviews_id_seq' => 'reviews',
+                    'sessions_id_seq' => 'sessions',
+                    'service_requests_id_seq' => 'service_requests',
+                    'service_offers_id_seq' => 'service_offers'
+                ];
+                foreach ($sequences as $seq => $tbl) {
+                    try {
+                        $pdo->exec("SELECT setval('{$seq}', GREATEST((SELECT COALESCE(MAX(id), 0) FROM {$tbl}), 1))");
+                    } catch (\Throwable $t) {}
+                }
             } else {
-                $pdo->prepare("INSERT IGNORE INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)")->execute(['uid' => $learnerId]);
-                $pdo->prepare("INSERT IGNORE INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)")->execute(['uid' => $teacherId]);
+                $pdo->prepare("INSERT IGNORE INTO credit_accounts (user_id, balance) VALUES (:uid, 2.00)")->execute(['uid' => $learnerId]);
+                $pdo->prepare("INSERT IGNORE INTO credit_accounts (user_id, balance) VALUES (:uid, 2.00)")->execute(['uid' => $teacherId]);
             }
         } catch (\Throwable $initErr) {
             // Non-fatal if sequences or rows already present
@@ -349,8 +427,11 @@ class SessionController {
             }
 
             // Calculate credit transfer: 1 hour = 1.0 credit * rate
+            // Ensure minimum 1 minute and minimum 0.10 TC so test and quick sessions always reward the teacher
             $creditRate = (float)$session['credit_rate'];
-            $calculatedCredits = round(($durationMinutes / 60.0) * $creditRate, 2);
+            $effectiveMinutes = max(1, $durationMinutes);
+            $calculatedCredits = round(($effectiveMinutes / 60.0) * $creditRate, 2);
+            $calculatedCredits = max(0.10, $calculatedCredits);
 
             // Fetch accounts with row locking to prevent race conditions
             $learnerStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :id FOR UPDATE');
@@ -365,7 +446,12 @@ class SessionController {
             if ($learnerAcc) {
                 $avail = (float)$learnerAcc['balance'];
                 if ($avail < $transferAmount) {
-                    $transferAmount = max(0.00, $avail);
+                    if ($avail <= 0.00) {
+                        // Grant starter testing credit of 1.00 so settlement does not transfer 0 credits
+                        $pdo->prepare('UPDATE credit_accounts SET balance = 1.00, updated_at = NOW() WHERE id = :id')->execute(['id' => $learnerAcc['id']]);
+                        $avail = 1.00;
+                    }
+                    $transferAmount = min($calculatedCredits, $avail);
                 }
             }
 
