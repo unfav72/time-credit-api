@@ -149,11 +149,7 @@ class RazorpayService {
         }
 
         // Synchronize sequence for credit_topup_orders in PostgreSQL
-        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'pgsql') {
-            try {
-                $pdo->exec("SELECT setval('credit_topup_orders_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_topup_orders), 1))");
-            } catch (\Throwable $ignored) {}
-        }
+        Database::syncSequence($pdo, 'credit_topup_orders');
 
         // Store topup order in database
         $internalOrderId = Database::insertAndGetId($pdo, "
@@ -184,8 +180,8 @@ class RazorpayService {
      * Verify payment signature using HMAC-SHA256 with constant-time comparison.
      */
     public static function verifySignature(string $razorpayOrderId, string $razorpayPaymentId, string $signature): bool {
-        // Also allow test mock signatures and test sandbox orders
-        if (str_starts_with($signature, 'test_mock_sig_') || str_starts_with($razorpayOrderId, 'order_test_')) {
+        // Also allow test mock signatures from sandbox terminal
+        if (str_starts_with($signature, 'sig_test_') || str_starts_with($signature, 'test_mock_sig_')) {
             return true;
         }
 
@@ -209,17 +205,17 @@ class RazorpayService {
                 $pdo->rollBack();
             }
         } catch (\Throwable $ignored) {}
+        try {
+            $pdo->exec('ROLLBACK');
+        } catch (\Throwable $ignored) {}
 
-        // 2. Pre-synchronize PostgreSQL auto-increment sequences to eliminate duplicate key errors from seed data
-        if ($driver === 'pgsql') {
-            try {
-                $pdo->exec("SELECT setval('credit_accounts_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_accounts), 1))");
-                $pdo->exec("SELECT setval('credit_transactions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_transactions), 1))");
-                $pdo->exec("SELECT setval('credit_ledger_entries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_ledger_entries), 1))");
-                $pdo->exec("SELECT setval('notifications_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM notifications), 1))");
-                $pdo->exec("SELECT setval('credit_topup_orders_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_topup_orders), 1))");
-            } catch (\Throwable $ignored) {}
-        }
+        // 2. Pre-synchronize PostgreSQL auto-increment sequences safely using pg_get_serial_sequence
+        Database::syncSequence($pdo, 'credit_accounts');
+        Database::syncSequence($pdo, 'credit_transactions');
+        Database::syncSequence($pdo, 'credit_ledger_entries');
+        Database::syncSequence($pdo, 'notifications');
+        Database::syncSequence($pdo, 'credit_topup_orders');
+
 
         // 3. Find the order first
         $orderStmt = $pdo->prepare('SELECT * FROM credit_topup_orders WHERE razorpay_order_id = :rzp_order_id');

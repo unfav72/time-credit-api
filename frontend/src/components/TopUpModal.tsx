@@ -63,6 +63,8 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
   const [sandboxCardNumber, setSandboxCardNumber] = useState('4111 2222 3333 4444');
   const [sandboxExpiry, setSandboxExpiry] = useState('12/28');
   const [sandboxCvv, setSandboxCvv] = useState('888');
+  const [customKeyId, setCustomKeyId] = useState(() => localStorage.getItem('timecredit_rzp_key') || '');
+  const [showKeyConfig, setShowKeyConfig] = useState(false);
   const [lastPaymentResult, setLastPaymentResult] = useState<{
     creditsAdded: number;
     amountInr: number;
@@ -71,6 +73,21 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
   } | null>(null);
 
   const selectedPackage = TOPUP_PACKAGES.find(p => p.id === selectedPackageId) || TOPUP_PACKAGES[1];
+
+  const handleDirectSandbox = async () => {
+    setLoading(true);
+    setErrorMessage('');
+    try {
+      const order = await api.createRazorpayOrder(selectedPackage.id);
+      setActiveOrder(order);
+      setStatus('sandbox_pay');
+    } catch (e: any) {
+      setErrorMessage(e?.message || 'Failed to initialize test sandbox.');
+      setStatus('failed');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleCheckout = async () => {
     setLoading(true);
@@ -85,11 +102,26 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
       const order = await api.createRazorpayOrder(selectedPackage.id);
       setActiveOrder(order);
 
-      if (typeof Razorpay !== 'undefined') {
-        const isServerOrder = order.razorpay_order_id && !order.razorpay_order_id.startsWith('order_test_') && !order.razorpay_order_id.includes('mock');
+      const isServerOrder = Boolean(
+        order.razorpay_order_id &&
+        !order.razorpay_order_id.startsWith('order_test_') &&
+        !order.razorpay_order_id.includes('mock')
+      );
 
+      const activeKey = customKeyId.trim() || order.key_id || '';
+
+      // If Razorpay API key is not an active live server order and no custom key is provided,
+      // opening Razorpay's live SDK iframe will fail with "Uh! oh! Something went wrong" (auth 401).
+      // Seamlessly transition directly to the Interactive Test Terminal!
+      if (!isServerOrder && !customKeyId.trim()) {
+        setLoading(false);
+        setStatus('sandbox_pay');
+        return;
+      }
+
+      if (typeof Razorpay !== 'undefined') {
         const options: any = {
-          key: order.key_id || 'rzp_test_TrFi6LyCzcSU8k',
+          key: activeKey || 'rzp_test_TrFi6LyCzcSU8k',
           amount: order.amount_paise,
           currency: order.currency || 'INR',
           name: 'TimeCredit Live',
@@ -152,16 +184,23 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
           options.order_id = order.razorpay_order_id;
         }
 
-        const rzpInstance = new Razorpay(options);
-        rzpInstance.on('payment.failed', function (response: any) {
-          setErrorMessage(response.error?.description || 'Payment failed or was declined.');
-          setStatus('failed');
+        try {
+          const rzpInstance = new Razorpay(options);
+          rzpInstance.on('payment.failed', function (response: any) {
+            console.warn('Razorpay checkout failed or key rejected:', response);
+            setLoading(false);
+            setErrorMessage('Razorpay reported: ' + (response.error?.description || 'Test key requires active dashboard setup') + '. Switched to Interactive Test Terminal.');
+            setStatus('sandbox_pay');
+          });
+          rzpInstance.open();
           setLoading(false);
-        });
-        rzpInstance.open();
-        setLoading(false);
+        } catch (rzpErr: any) {
+          console.warn('Razorpay open error:', rzpErr);
+          setLoading(false);
+          setStatus('sandbox_pay');
+        }
       } else {
-        // Fallback only if Razorpay CDN script was blocked
+        // Fallback if Razorpay CDN script was blocked
         setLoading(false);
         setStatus('sandbox_pay');
       }
@@ -171,6 +210,7 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
       setLoading(false);
     }
   };
+
 
   const handleAuthorizeSandboxPayment = async () => {
     if (!activeOrder) return;
@@ -365,6 +405,22 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
             </div>
             <ClayBadge variant="amber">TEST MODE</ClayBadge>
           </div>
+
+          {errorMessage && (
+            <div
+              style={{
+                padding: '0.75rem 1rem',
+                borderRadius: '12px',
+                background: '#eff6ff',
+                border: '1px solid #bfdbfe',
+                color: '#1e40af',
+                fontSize: '0.825rem',
+                lineHeight: 1.4
+              }}
+            >
+              💡 <strong>Interactive Terminal Active:</strong> {errorMessage}
+            </div>
+          )}
 
           {/* Payment Summary */}
           <ClayCard variant="inset" style={{ padding: '1.15rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -654,23 +710,82 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
             </div>
           </ClayCard>
 
+          {/* Custom Razorpay Key ID config */}
+          <div style={{ padding: '0.75rem 1rem', borderRadius: '14px', background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+            <div
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+              onClick={() => setShowKeyConfig(!showKeyConfig)}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.825rem', fontWeight: 600, color: '#475569' }}>
+                <ShieldCheck size={15} color="#6366f1" />
+                <span>Custom Razorpay Key ID (Optional)</span>
+              </div>
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#6366f1' }}>
+                {showKeyConfig ? '▲ Hide' : customKeyId ? '✓ Configured' : '▼ Configure'}
+              </span>
+            </div>
+
+            {showKeyConfig && (
+              <div style={{ marginTop: '0.65rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <input
+                  type="text"
+                  placeholder="e.g. rzp_test_xxxxxxxxxxxxxx"
+                  value={customKeyId}
+                  onChange={(e) => {
+                    const val = e.target.value.trim();
+                    setCustomKeyId(val);
+                    if (val) {
+                      localStorage.setItem('timecredit_rzp_key', val);
+                    } else {
+                      localStorage.removeItem('timecredit_rzp_key');
+                    }
+                  }}
+                  style={{
+                    padding: '0.55rem 0.8rem',
+                    borderRadius: '10px',
+                    border: '1px solid #cbd5e1',
+                    fontSize: '0.85rem',
+                    fontFamily: 'monospace',
+                    outline: 'none'
+                  }}
+                />
+                <span style={{ fontSize: '0.75rem', color: '#64748b', lineHeight: 1.4 }}>
+                  Generate your free test keys from <a href="https://dashboard.razorpay.com/#/access/api_keys" target="_blank" rel="noreferrer" style={{ color: '#6366f1', textDecoration: 'underline' }}>Razorpay Dashboard</a>. Leave blank to automatically use the Instant Test Sandbox Terminal.
+                </span>
+              </div>
+            )}
+          </div>
+
           {/* Action Buttons */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.25rem' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', marginTop: '0.25rem' }}>
             <ClayButton variant="secondary" onClick={handleResetModal} disabled={loading}>
               Cancel
             </ClayButton>
-            <ClayButton
-              variant="mint"
-              size="lg"
-              onClick={handleCheckout}
-              disabled={loading}
-              icon={<CreditCard size={18} />}
-            >
-              {loading ? 'Opening Razorpay Checkout...' : `Proceed to Pay with Razorpay (₹${selectedPackage.price_inr}.00)`}
-            </ClayButton>
+
+            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+              <ClayButton
+                variant="primary"
+                size="lg"
+                onClick={handleDirectSandbox}
+                disabled={loading}
+                icon={<Sparkles size={18} />}
+              >
+                ⚡ Instant Test Top-Up
+              </ClayButton>
+              <ClayButton
+                variant="mint"
+                size="lg"
+                onClick={handleCheckout}
+                disabled={loading}
+                icon={<CreditCard size={18} />}
+              >
+                {loading ? 'Opening...' : `Proceed to Pay (₹${selectedPackage.price_inr}.00)`}
+              </ClayButton>
+            </div>
           </div>
         </div>
       )}
+
     </ClayModal>
   );
 };

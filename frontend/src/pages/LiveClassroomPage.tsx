@@ -2180,10 +2180,16 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             /* Learner settlement view */
             <>
               {settleError && (
-                <div style={{ padding: '0.85rem 1rem', borderRadius: '14px', background: '#fee2e2', border: '1px solid #f87171', color: '#991b1b', fontSize: '0.875rem' }}>
-                  <strong>Settlement Note:</strong> {settleError}
+                <div style={{ padding: '0.85rem 1rem', borderRadius: '14px', background: '#fee2e2', border: '1px solid #f87171', color: '#991b1b', fontSize: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <div><strong>Settlement Note:</strong> {settleError}</div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                    <ClayButton variant="danger" size="sm" onClick={() => handleExitClassroom('dashboard')}>
+                      Force Exit & End Class
+                    </ClayButton>
+                  </div>
                 </div>
               )}
+
 
               <p style={{ color: '#475569', fontSize: '0.95rem', lineHeight: 1.5 }}>
                 Completing this live classroom session will finish the call and trigger the <strong>ACID credit settlement</strong> transfer to your instructor <strong>{remoteUserName}</strong>:

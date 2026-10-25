@@ -159,4 +159,24 @@ class Database {
         $val = $pdo->lastInsertId();
         return ($val !== false && is_numeric($val)) ? (int)$val : 0;
     }
+
+    /**
+     * Driver-agnostic helper to synchronize auto-increment sequences in PostgreSQL.
+     * Uses pg_get_serial_sequence to safely find the sequence attached to table/column.
+     */
+    public static function syncSequence(PDO $pdo, string $table, string $column = 'id'): void {
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'pgsql') {
+            return;
+        }
+        try {
+            $stmt = $pdo->prepare("SELECT pg_get_serial_sequence(:tbl, :col)");
+            $stmt->execute(['tbl' => $table, 'col' => $column]);
+            $seq = $stmt->fetchColumn();
+            if ($seq) {
+                $pdo->exec("SELECT setval('{$seq}', GREATEST((SELECT COALESCE(MAX({$column}), 0) FROM {$table}), 1))");
+            }
+        } catch (\Throwable $ignored) {}
+    }
 }
+
+
