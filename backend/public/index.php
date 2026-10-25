@@ -357,6 +357,8 @@ try {
         SessionController::index();
     } elseif ($requestUri === '/api/v1/sessions/live' && $method === 'GET') {
         SessionController::live();
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)$#', $requestUri, $matches) && $method === 'GET') {
+        SessionController::show((int)$matches[1]);
     } elseif ($requestUri === '/api/v1/sessions/create' && $method === 'POST') {
         SessionController::create();
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/join$#', $requestUri, $matches) && $method === 'POST') {

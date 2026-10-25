@@ -304,11 +304,21 @@ class ApiClient {
     }));
   }
 
-  async joinSession(sessionId: number): Promise<{ roomId: string; isTeacher: boolean }> {
-    const res = await this.request<{ room_id: string; is_teacher: boolean }>(`/api/v1/sessions/${sessionId}/join`, {
+  async getSession(sessionId: number): Promise<Session> {
+    const res = await this.request<{ session: Session }>(`/api/v1/sessions/${sessionId}`, { method: 'GET' });
+    const s = res.session;
+    return {
+      ...s,
+      credit_rate: Number(s.credit_rate != null ? s.credit_rate : 1.0),
+      rating: s.rating != null ? Number(s.rating) : undefined
+    };
+  }
+
+  async joinSession(sessionId: number): Promise<{ roomId: string; isTeacher: boolean; session?: Session }> {
+    const res = await this.request<{ room_id: string; is_teacher: boolean; session?: Session }>(`/api/v1/sessions/${sessionId}/join`, {
       method: 'POST'
     });
-    return { roomId: res.room_id, isTeacher: res.is_teacher };
+    return { roomId: res.room_id, isTeacher: res.is_teacher, session: res.session };
   }
 
   async completeSession(sessionId: number, durationMinutes: number): Promise<{ transferredCredits: number }> {

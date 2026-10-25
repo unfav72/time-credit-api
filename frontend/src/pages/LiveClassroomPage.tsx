@@ -149,37 +149,79 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const loadSession = async () => {
     setLoadingSession(true);
     try {
-      const list = await api.getSessions();
-      // Only select an active live session that is IN_PROGRESS or SCHEDULED
-      const current = list.find(s => s.status === 'IN_PROGRESS' || s.status === 'SCHEDULED') || null;
-      setActiveSession(current);
+      const targetedId = sessionStorage.getItem('active_classroom_session_id');
+      let current: Session | null = null;
 
-      if (current && current.status === 'IN_PROGRESS') {
-        const isHostUser = current.teacher_id === currentUser.id || current.teacher_name === currentUser.full_name;
-        const hasJoinedLearner = Boolean(current.learner_id && current.learner_id !== current.teacher_id);
-        
-        // Auto-join learner when entering classroom so learner_id is bound in database
-        if (!isHostUser) {
-          api.joinSession(current.id).catch(console.warn);
-        }
-
-        if (hasJoinedLearner || !isHostUser) {
-          if (!learnerJoinedAtRef.current) {
-            learnerJoinedAtRef.current = Date.now();
+      // 1. If user specifically targeted a session from Browse or Sessions page:
+      if (targetedId) {
+        try {
+          await api.joinSession(Number(targetedId)).catch(console.warn);
+          const targetSession = await api.getSession(Number(targetedId)).catch(() => null);
+          if (targetSession && (targetSession.status === 'IN_PROGRESS' || targetSession.status === 'SCHEDULED')) {
+            current = targetSession;
           }
-          setIsTimerRunning(true);
-        } else {
-          learnerJoinedAtRef.current = null;
-          setElapsedSeconds(0);
-          setIsTimerRunning(false);
+        } catch (tErr) {
+          console.warn('Target session load error:', tErr);
         }
-      } else {
+      }
+
+      // 2. If no valid targeted session, query user's personal sessions:
+      if (!current) {
+        const list = await api.getSessions().catch(() => []);
+        current = list.find(s => s.status === 'IN_PROGRESS' || s.status === 'SCHEDULED') || null;
+      }
+
+      // 3. Fallback: Check open live sessions across platform:
+      if (!current) {
+        const liveList = await api.getLiveSessions().catch(() => []);
+        if (liveList.length > 0) {
+          const liveCandidate = liveList[0];
+          if (liveCandidate.status === 'IN_PROGRESS' || liveCandidate.status === 'SCHEDULED') {
+            current = liveCandidate;
+            api.joinSession(current.id).catch(console.warn);
+          }
+        }
+      }
+
+      // If no active session or if completed, clear storage and show empty classroom:
+      if (!current || current.status === 'COMPLETED' || current.status === 'CANCELLED') {
+        sessionStorage.removeItem('active_classroom_session_id');
+        setActiveSession(null);
         learnerJoinedAtRef.current = null;
         setIsTimerRunning(false);
         stopAllMediaTracks();
+      } else {
+        sessionStorage.setItem('active_classroom_session_id', String(current.id));
+        setActiveSession(current);
+
+        if (current.status === 'IN_PROGRESS') {
+          const isHostUser = current.teacher_id === currentUser.id || current.teacher_name === currentUser.full_name;
+          const hasJoinedLearner = Boolean(current.learner_id && current.learner_id !== current.teacher_id);
+
+          // Auto-join learner when entering classroom so learner_id is bound in database
+          if (!isHostUser) {
+            api.joinSession(current.id).catch(console.warn);
+          }
+
+          if (hasJoinedLearner || !isHostUser) {
+            if (!learnerJoinedAtRef.current) {
+              learnerJoinedAtRef.current = Date.now();
+            }
+            setIsTimerRunning(true);
+          } else {
+            learnerJoinedAtRef.current = null;
+            setElapsedSeconds(0);
+            setIsTimerRunning(false);
+          }
+        } else {
+          learnerJoinedAtRef.current = null;
+          setIsTimerRunning(false);
+          stopAllMediaTracks();
+        }
       }
     } catch (err) {
       console.warn('Could not load session:', err);
+      sessionStorage.removeItem('active_classroom_session_id');
       setActiveSession(null);
     } finally {
       setLoadingSession(false);
@@ -767,6 +809,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             }
           } else if (sig.signal_type === 'session-ended') {
             console.log('[WebRTC] Peer notified that session has completed and settled:', payload);
+            sessionStorage.removeItem('active_classroom_session_id');
             const creds = Number(payload?.credits ?? accruedCredits);
             const dur = Number(payload?.duration ?? elapsedMinutes);
             setSettledResult({ credits: creds, duration: dur });
@@ -827,12 +870,40 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const creditRate = activeSession?.credit_rate || 1.0;
   const accruedCredits = Math.round((elapsedMinutes / 60.0) * creditRate * 100) / 100;
 
+  // Periodic poll to detect if meeting was ended/completed by peer on the server
+  useEffect(() => {
+    if (!activeSession || activeSession.status !== 'IN_PROGRESS') return;
+
+    const interval = setInterval(async () => {
+      try {
+        const s = await api.getSession(activeSession.id).catch(() => null);
+        if (s && (s.status === 'COMPLETED' || s.status === 'CANCELLED')) {
+          console.log('[Classroom] Server session marked COMPLETED:', s.id);
+          sessionStorage.removeItem('active_classroom_session_id');
+          stopAllMediaTracks();
+          setIsTimerRunning(false);
+          learnerJoinedAtRef.current = null;
+          setActiveSession(null);
+          setSettledResult({ credits: accruedCredits, duration: elapsedMinutes });
+          setCompletedSessionId(s.id);
+          setSettleModalOpen(true);
+        }
+      } catch (err) {
+        // Silently handled
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [activeSession?.id, activeSession?.status, accruedCredits, elapsedMinutes]);
+
   const handleEndAndSettle = async () => {
     setSettling(true);
     setSettleError(null);
     const sid = activeSession?.id;
 
     try {
+      sessionStorage.removeItem('active_classroom_session_id');
+
       if (activeSession) {
         const res = await api.completeSession(activeSession.id, elapsedMinutes);
         setSettledResult({ credits: res.transferredCredits, duration: elapsedMinutes });
@@ -913,6 +984,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   };
 
   const handleExitClassroom = (targetPage: string = 'classroom') => {
+    sessionStorage.removeItem('active_classroom_session_id');
     stopAllMediaTracks();
     setIsTimerRunning(false);
     learnerJoinedAtRef.current = null;

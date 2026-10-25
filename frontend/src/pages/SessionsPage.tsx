@@ -65,6 +65,7 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
 
   const handleJoinClassroom = async (session: Session) => {
     try {
+      sessionStorage.setItem('active_classroom_session_id', String(session.id));
       await api.joinSession(session.id);
     } catch {}
     onNavigate('classroom');

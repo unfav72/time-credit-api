@@ -15,23 +15,26 @@ class SessionController {
         $user = AuthMiddleware::requireAuth();
         $pdo = Database::getCoreConnection();
 
-        $stmt = $pdo->prepare('
+        $stmt = $pdo->prepare("
             SELECT s.*, 
-                   so.title AS offer_title, so.credit_rate,
-                   sk.name AS skill_name,
+                   COALESCE(so.title, 'Live Teaching Class') AS offer_title, 
+                   COALESCE(so.credit_rate, 1.00) AS credit_rate,
+                   COALESCE(sk.name, 'General Skill Exchange') AS skill_name,
                    teacher.full_name AS teacher_name, teacher.email AS teacher_email,
-                   learner.full_name AS learner_name, learner.email AS learner_email,
+                   COALESCE(learner.full_name, 'Learner') AS learner_name, COALESCE(learner.email, '') AS learner_email,
                    r.rating, r.comment AS review_comment
             FROM sessions s
-            JOIN service_requests sr ON s.request_id = sr.id
-            JOIN service_offers so ON sr.offer_id = so.id
-            JOIN skills sk ON so.skill_id = sk.id
-            JOIN users teacher ON s.teacher_id = teacher.id
-            JOIN users learner ON s.learner_id = learner.id
+            LEFT JOIN service_requests sr ON s.request_id = sr.id
+            LEFT JOIN service_offers so ON sr.offer_id = so.id
+            LEFT JOIN skills sk ON so.skill_id = sk.id
+            LEFT JOIN users teacher ON s.teacher_id = teacher.id
+            LEFT JOIN users learner ON s.learner_id = learner.id
             LEFT JOIN reviews r ON r.session_id = s.id AND r.reviewer_id = :uid
-            WHERE s.teacher_id = :uid OR s.learner_id = :uid
+            WHERE s.teacher_id = :uid 
+               OR s.learner_id = :uid
+               OR EXISTS (SELECT 1 FROM session_participants sp WHERE sp.session_id = s.id AND sp.user_id = :uid)
             ORDER BY s.scheduled_start_at DESC
-        ');
+        ");
         $stmt->execute(['uid' => $user['id']]);
         AuthMiddleware::jsonResponse(['sessions' => $stmt->fetchAll()]);
     }
@@ -44,16 +47,19 @@ class SessionController {
         $pdo = Database::getCoreConnection();
         $stmt = $pdo->query("
             SELECT s.*,
-                   so.title AS offer_title, so.credit_rate, so.description AS offer_description,
-                   sk.name AS skill_name,
+                   COALESCE(so.title, 'Live Peer Class') AS offer_title, 
+                   COALESCE(so.credit_rate, 1.00) AS credit_rate, 
+                   COALESCE(so.description, 'Interactive live learning class.') AS offer_description,
+                   COALESCE(sk.name, 'Peer Learning') AS skill_name,
                    teacher.full_name AS teacher_name, teacher.email AS teacher_email,
-                   learner.full_name AS learner_name, learner.email AS learner_email
+                   COALESCE(learner.full_name, 'Waiting for learner to join...') AS learner_name, 
+                   COALESCE(learner.email, '') AS learner_email
             FROM sessions s
-            JOIN service_requests sr ON s.request_id = sr.id
-            JOIN service_offers so ON sr.offer_id = so.id
-            JOIN skills sk ON so.skill_id = sk.id
-            JOIN users teacher ON s.teacher_id = teacher.id
-            JOIN users learner ON s.learner_id = learner.id
+            LEFT JOIN service_requests sr ON s.request_id = sr.id
+            LEFT JOIN service_offers so ON sr.offer_id = so.id
+            LEFT JOIN skills sk ON so.skill_id = sk.id
+            LEFT JOIN users teacher ON s.teacher_id = teacher.id
+            LEFT JOIN users learner ON s.learner_id = learner.id
             WHERE s.status IN ('IN_PROGRESS', 'SCHEDULED')
             ORDER BY s.actual_start_at DESC NULLS LAST, s.scheduled_start_at DESC
             LIMIT 25
@@ -201,23 +207,30 @@ class SessionController {
 
         $teacherId = (int)$session['teacher_id'];
         $learnerId = (int)$session['learner_id'];
+        $currentUserId = (int)$user['id'];
 
-        // If joining user is not teacher, and session has no separate learner, attach as learner!
-        if ((int)$user['id'] !== $teacherId && ($learnerId === $teacherId || $learnerId <= 0)) {
-            $upd = $pdo->prepare("UPDATE sessions SET learner_id = :uid, status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()) WHERE id = :id");
-            $upd->execute(['uid' => $user['id'], 'id' => $sessionId]);
+        // If joining user is not teacher, attach as learner!
+        if ($currentUserId !== $teacherId) {
+            $upd = $pdo->prepare("UPDATE sessions SET learner_id = :uid, status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()), updated_at = NOW() WHERE id = :id");
+            $upd->execute(['uid' => $currentUserId, 'id' => $sessionId]);
 
-            $updReq = $pdo->prepare("UPDATE service_requests SET learner_id = :uid, status = 'Accepted' WHERE id = :rid");
-            $updReq->execute(['uid' => $user['id'], 'rid' => $session['request_id']]);
-            $learnerId = (int)$user['id'];
+            if (!empty($session['request_id'])) {
+                $updReq = $pdo->prepare("UPDATE service_requests SET learner_id = :uid, status = 'Accepted' WHERE id = :rid");
+                $updReq->execute(['uid' => $currentUserId, 'rid' => $session['request_id']]);
+            }
+            $learnerId = $currentUserId;
         }
 
-        // Record participant entry
-        $part = $pdo->prepare('
-            INSERT INTO session_participants (session_id, user_id, joined_at)
-            VALUES (:sess_id, :user_id, NOW())
-        ');
-        $part->execute(['sess_id' => $sessionId, 'user_id' => $user['id']]);
+        // Record participant entry safely
+        try {
+            $part = $pdo->prepare('
+                INSERT INTO session_participants (session_id, user_id, joined_at)
+                VALUES (:sess_id, :user_id, NOW())
+            ');
+            $part->execute(['sess_id' => $sessionId, 'user_id' => $currentUserId]);
+        } catch (\Throwable $pErr) {
+            // Non-fatal if participant is already registered or sequence issues
+        }
 
         // If SCHEDULED, change to IN_PROGRESS and mark actual_start_at
         if ($session['status'] === 'SCHEDULED') {
@@ -225,11 +238,66 @@ class SessionController {
             $upd->execute(['id' => $sessionId]);
         }
 
+        // Re-fetch the full updated session data to return directly
+        $fullStmt = $pdo->prepare("
+            SELECT s.*, 
+                   COALESCE(so.title, 'Live Teaching Class') AS offer_title, 
+                   COALESCE(so.credit_rate, 1.00) AS credit_rate,
+                   COALESCE(sk.name, 'General Skill Exchange') AS skill_name,
+                   teacher.full_name AS teacher_name, teacher.email AS teacher_email,
+                   COALESCE(learner.full_name, 'Learner') AS learner_name, COALESCE(learner.email, '') AS learner_email
+            FROM sessions s
+            LEFT JOIN service_requests sr ON s.request_id = sr.id
+            LEFT JOIN service_offers so ON sr.offer_id = so.id
+            LEFT JOIN skills sk ON so.skill_id = sk.id
+            LEFT JOIN users teacher ON s.teacher_id = teacher.id
+            LEFT JOIN users learner ON s.learner_id = learner.id
+            WHERE s.id = :id
+        ");
+        $fullStmt->execute(['id' => $sessionId]);
+        $refreshed = $fullStmt->fetch() ?: $session;
+
         AuthMiddleware::jsonResponse([
+            'success' => true,
             'message' => 'Joined session successfully',
-            'room_id' => $session['meeting_room_id'],
-            'is_teacher' => (int)$session['teacher_id'] === (int)$user['id']
+            'session_id' => $sessionId,
+            'room_id' => $refreshed['meeting_room_id'] ?? $session['meeting_room_id'],
+            'is_teacher' => (int)$session['teacher_id'] === $currentUserId,
+            'session' => $refreshed
         ]);
+    }
+
+    /**
+     * GET /api/v1/sessions/{id}
+     */
+    public static function show(int $sessionId): void {
+        AuthMiddleware::requireAuth();
+        $pdo = Database::getCoreConnection();
+
+        $stmt = $pdo->prepare("
+            SELECT s.*, 
+                   COALESCE(so.title, 'Live Teaching Class') AS offer_title, 
+                   COALESCE(so.credit_rate, 1.00) AS credit_rate,
+                   COALESCE(sk.name, 'General Skill Exchange') AS skill_name,
+                   teacher.full_name AS teacher_name, teacher.email AS teacher_email,
+                   COALESCE(learner.full_name, 'Learner') AS learner_name, COALESCE(learner.email, '') AS learner_email
+            FROM sessions s
+            LEFT JOIN service_requests sr ON s.request_id = sr.id
+            LEFT JOIN service_offers so ON sr.offer_id = so.id
+            LEFT JOIN skills sk ON so.skill_id = sk.id
+            LEFT JOIN users teacher ON s.teacher_id = teacher.id
+            LEFT JOIN users learner ON s.learner_id = learner.id
+            WHERE s.id = :id
+        ");
+        $stmt->execute(['id' => $sessionId]);
+        $session = $stmt->fetch();
+
+        if (!$session) {
+            AuthMiddleware::jsonResponse(['error' => 'Session not found.'], 404);
+            return;
+        }
+
+        AuthMiddleware::jsonResponse(['session' => $session]);
     }
 
     /**
