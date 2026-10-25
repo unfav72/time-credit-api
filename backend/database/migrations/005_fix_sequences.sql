@@ -39,6 +39,9 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'credit_accounts_id_seq') THEN
         PERFORM setval('credit_accounts_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_accounts), 1));
     END IF;
+    IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'credit_topup_orders_id_seq') THEN
+        PERFORM setval('credit_topup_orders_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_topup_orders), 1));
+    END IF;
     IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'credit_transactions_id_seq') THEN
         PERFORM setval('credit_transactions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_transactions), 1));
     END IF;

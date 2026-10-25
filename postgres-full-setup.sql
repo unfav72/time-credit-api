@@ -715,6 +715,7 @@ SELECT setval('service_offers_id_seq', COALESCE((SELECT MAX(id) FROM service_off
 SELECT setval('service_requests_id_seq', COALESCE((SELECT MAX(id) FROM service_requests), 1));
 SELECT setval('sessions_id_seq', COALESCE((SELECT MAX(id) FROM sessions), 1));
 SELECT setval('credit_accounts_id_seq', COALESCE((SELECT MAX(id) FROM credit_accounts), 1));
+SELECT setval('credit_topup_orders_id_seq', COALESCE((SELECT MAX(id) FROM credit_topup_orders), 1));
 SELECT setval('credit_transactions_id_seq', COALESCE((SELECT MAX(id) FROM credit_transactions), 1));
 SELECT setval('credit_ledger_entries_id_seq', COALESCE((SELECT MAX(id) FROM credit_ledger_entries), 1));
 SELECT setval('reviews_id_seq', COALESCE((SELECT MAX(id) FROM reviews), 1));

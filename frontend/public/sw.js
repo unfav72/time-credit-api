@@ -1,7 +1,5 @@
-const CACHE_NAME = 'timecredit-live-v1';
+const CACHE_NAME = 'timecredit-live-v2-fresh';
 const STATIC_ASSETS = [
-  '/',
-  '/index.html',
   '/manifest.webmanifest',
   '/logo.png',
   '/icons/icon-192.png',
@@ -9,41 +7,38 @@ const STATIC_ASSETS = [
   '/offline.html'
 ];
 
-// Install: Cache core application shell
+// Install: Immediately skip waiting to take over
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS);
-    }).then(() => self.skipWaiting())
+      return cache.addAll(STATIC_ASSETS).catch(console.warn);
+    })
   );
 });
 
-// Activate: Clean up old caches
+// Activate: Immediately claim all clients and PURGE all stale caches to prevent blank screen errors
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
-      return Promise.all(
-        keys.map((key) => {
-          if (key !== CACHE_NAME) {
-            return caches.delete(key);
-          }
-        })
-      );
+      return Promise.all(keys.map((k) => caches.delete(k)));
     }).then(() => self.clients.claim())
   );
 });
 
-// Fetch: Network first with offline fallback for navigational routes; Never cache sensitive /api calls
+// Fetch: Always Network-First for navigation and code chunks; Never serve stale HTML
 self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
+
   const url = new URL(event.request.url);
 
-  // NEVER cache API requests, auth calls, or wallet data
+  // 1. NEVER cache API requests, auth calls, or database operations
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
       fetch(event.request).catch(() => {
         return new Response(
           JSON.stringify({
-            error: 'You are currently offline. Live database operations require an active network connection.',
+            error: 'You are currently offline. Live operations require an active network connection.',
             offline: true
           }),
           {
@@ -56,19 +51,20 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static assets & App Shell: Cache-first fallback to network
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
+  // 2. Navigational requests (HTML): Always Network-First to guarantee fresh chunk hashes!
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(() => {
+        return caches.match('/offline.html');
+      })
+    );
+    return;
+  }
 
-      return fetch(event.request).catch(() => {
-        // Return offline page for navigation requests
-        if (event.request.mode === 'navigate') {
-          return caches.match('/offline.html');
-        }
-      });
+  // 3. Static assets & media: Network-first with cache fallback
+  event.respondWith(
+    fetch(event.request).catch(() => {
+      return caches.match(event.request);
     })
   );
 });

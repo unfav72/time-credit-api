@@ -67,6 +67,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const videoTransceiverRef = useRef<RTCRtpTransceiver | null>(null);
   const audioTransceiverRef = useRef<RTCRtpTransceiver | null>(null);
+  const sendOfferRef = useRef<(() => Promise<void>) | null>(null);
   const lastSignalIdRef = useRef<number>(0);
 
   const handleManualReconnect = async () => {
@@ -396,6 +397,10 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         console.warn('Reverting track error on stop screen share:', err);
       }
     }
+
+    if (sendOfferRef.current) {
+      await sendOfferRef.current().catch(console.warn);
+    }
   };
 
   const toggleScreenShare = async () => {
@@ -437,6 +442,10 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         } else {
           pcRef.current.addTrack(screenTrack, screenStream);
         }
+      }
+
+      if (sendOfferRef.current) {
+        await sendOfferRef.current().catch(console.warn);
       }
 
       screenTrack.onended = () => {
@@ -632,6 +641,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         console.warn('Error creating WebRTC offer:', err);
       }
     };
+    sendOfferRef.current = sendOffer;
 
     // Broadcast presence
     api.sendSignal(activeSession.id, 'join', { user_id: currentUser.id, role: isHost ? 'teacher' : 'learner' }).catch(() => {});
@@ -788,6 +798,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         remoteStreamRef.current.getTracks().forEach(t => { try { t.stop(); } catch {} });
         remoteStreamRef.current = null;
       }
+      sendOfferRef.current = null;
       setHasRemoteVideo(false);
       setHasRemoteAudio(false);
       setConnectionStatus('idle');

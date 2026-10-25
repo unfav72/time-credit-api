@@ -148,6 +148,13 @@ class RazorpayService {
             $razorpayOrderId = 'order_test_' . bin2hex(random_bytes(7));
         }
 
+        // Synchronize sequence for credit_topup_orders in PostgreSQL
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'pgsql') {
+            try {
+                $pdo->exec("SELECT setval('credit_topup_orders_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_topup_orders), 1))");
+            } catch (\Throwable $ignored) {}
+        }
+
         // Store topup order in database
         $internalOrderId = Database::insertAndGetId($pdo, "
             INSERT INTO credit_topup_orders 
@@ -190,66 +197,99 @@ class RazorpayService {
 
     /**
      * Reusable atomic credit fulfillment service.
-     * Enforces strict ACID properties, row locking, and idempotent fulfillment.
+     * Enforces strict ACID properties, row locking, sequence synchronization, and idempotent fulfillment.
      */
     public static function fulfillSuccessfulTopup(string $razorpayOrderId, string $razorpayPaymentId): array {
         $pdo = Database::getCoreConnection();
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+
+        // 1. Reset any dangling or previously aborted transaction on the PDO connection
+        try {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+        } catch (\Throwable $ignored) {}
+
+        // 2. Pre-synchronize PostgreSQL auto-increment sequences to eliminate duplicate key errors from seed data
+        if ($driver === 'pgsql') {
+            try {
+                $pdo->exec("SELECT setval('credit_accounts_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_accounts), 1))");
+                $pdo->exec("SELECT setval('credit_transactions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_transactions), 1))");
+                $pdo->exec("SELECT setval('credit_ledger_entries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_ledger_entries), 1))");
+                $pdo->exec("SELECT setval('notifications_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM notifications), 1))");
+                $pdo->exec("SELECT setval('credit_topup_orders_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_topup_orders), 1))");
+            } catch (\Throwable $ignored) {}
+        }
+
+        // 3. Find the order first
+        $orderStmt = $pdo->prepare('SELECT * FROM credit_topup_orders WHERE razorpay_order_id = :rzp_order_id');
+        $orderStmt->execute(['rzp_order_id' => $razorpayOrderId]);
+        $order = $orderStmt->fetch();
+
+        if (!$order) {
+            throw new RuntimeException('Top-up order not found for order ID: ' . $razorpayOrderId);
+        }
+
+        $userId = (int)$order['user_id'];
+        $creditsToAdd = (float)$order['credits'];
+        $packageId = (string)$order['package_id'];
+
+        // 4. Pre-ensure user has a credit_accounts row before entering transaction
+        try {
+            if ($driver === 'pgsql') {
+                $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
+                    ->execute(['uid' => $userId]);
+            } else {
+                $pdo->prepare('INSERT IGNORE INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)')
+                    ->execute(['uid' => $userId]);
+            }
+        } catch (\Throwable $ignored) {}
+
+        // 5. Begin ACID Transaction Block
         $pdo->beginTransaction();
 
         try {
-            // 1. Lock top-up order row
-            $stmt = $pdo->prepare('
-                SELECT * FROM credit_topup_orders 
-                WHERE razorpay_order_id = :rzp_order_id 
-                FOR UPDATE
-            ');
-            $stmt->execute(['rzp_order_id' => $razorpayOrderId]);
-            $order = $stmt->fetch();
+            // Lock top-up order row for atomic update
+            $lockStmt = $pdo->prepare('SELECT * FROM credit_topup_orders WHERE id = :id FOR UPDATE');
+            $lockStmt->execute(['id' => $order['id']]);
+            $lockedOrder = $lockStmt->fetch();
 
-            if (!$order) {
-                $pdo->rollBack();
-                throw new RuntimeException('Top-up order not found for order ID: ' . $razorpayOrderId);
-            }
-
-            // 2. Check if already fulfilled
-            if ($order['status'] === 'PAID' && !empty($order['fulfilled_at'])) {
-                // Fetch current balance to return safely
+            // Check if already fulfilled (Idempotency safeguard)
+            if ($lockedOrder && $lockedOrder['status'] === 'PAID' && !empty($lockedOrder['fulfilled_at'])) {
                 $balStmt = $pdo->prepare('SELECT balance FROM credit_accounts WHERE user_id = :uid');
-                $balStmt->execute(['uid' => $order['user_id']]);
+                $balStmt->execute(['uid' => $userId]);
                 $bal = (float)$balStmt->fetchColumn();
 
                 $pdo->commit();
                 return [
                     'already_fulfilled' => true,
-                    'credits_added' => (float)$order['credits'],
+                    'credits_added' => $creditsToAdd,
                     'new_balance' => $bal,
-                    'order_id' => $order['id']
+                    'order_id' => (int)$order['id']
                 ];
             }
 
-            $userId = (int)$order['user_id'];
-            $creditsToAdd = (float)$order['credits'];
-            $packageId = $order['package_id'];
-
-            // 3. Lock user credit account row
-            $accStmt = $pdo->prepare('
-                SELECT id, balance FROM credit_accounts 
-                WHERE user_id = :uid 
-                FOR UPDATE
-            ');
+            // Lock and fetch credit account
+            $accStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :uid FOR UPDATE');
             $accStmt->execute(['uid' => $userId]);
             $acc = $accStmt->fetch();
 
             if (!$acc) {
-                // Create account if not present
-                $accountId = Database::insertAndGetId($pdo, 'INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)', ['uid' => $userId]);
-                $currentBalance = 0.00;
-            } else {
-                $accountId = (int)$acc['id'];
-                $currentBalance = (float)$acc['balance'];
+                // Fallback insert if row didn't exist
+                if ($driver === 'pgsql') {
+                    $cStmt = $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) RETURNING id, balance');
+                    $cStmt->execute(['uid' => $userId]);
+                    $acc = $cStmt->fetch();
+                } else {
+                    $newId = Database::insertAndGetId($pdo, 'INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)', ['uid' => $userId]);
+                    $acc = ['id' => $newId, 'balance' => 0.00];
+                }
             }
 
-            // 4. Update order status to PAID
+            $accountId = (int)$acc['id'];
+            $currentBalance = (float)$acc['balance'];
+
+            // Update top-up order status to PAID
             $updOrder = $pdo->prepare("
                 UPDATE credit_topup_orders 
                 SET status = 'PAID',
@@ -263,48 +303,85 @@ class RazorpayService {
                 'id' => $order['id']
             ]);
 
-            // 5. Insert master credit transaction
+            // Check if master credit transaction already exists for idempotency
             $idempotencyKey = 'TOPUP_' . $order['id'] . '_' . $razorpayOrderId;
-            $txnId = Database::insertAndGetId($pdo, "
-                INSERT INTO credit_transactions 
-                    (session_id, topup_order_id, idempotency_key, transaction_type, status)
-                VALUES 
-                    (NULL, :topup_id, :key, 'PURCHASE', 'COMMITTED')
-            ", [
-                'topup_id' => $order['id'],
-                'key' => $idempotencyKey
-            ]);
+            $chkTxn = $pdo->prepare('SELECT id FROM credit_transactions WHERE idempotency_key = :key');
+            $chkTxn->execute(['key' => $idempotencyKey]);
+            $existingTxnId = $chkTxn->fetchColumn();
 
-            // 6. Insert credit ledger entry (CREDIT)
-            $ledger = $pdo->prepare("
-                INSERT INTO credit_ledger_entries 
-                    (transaction_id, account_id, entry_type, amount)
-                VALUES 
-                    (:txn_id, :acc_id, 'CREDIT', :amount)
-            ");
-            $ledger->execute([
-                'txn_id' => $txnId,
-                'acc_id' => $accountId,
-                'amount' => $creditsToAdd
-            ]);
+            if ($existingTxnId) {
+                $txnId = (int)$existingTxnId;
+            } else {
+                if ($driver === 'pgsql') {
+                    $txnStmt = $pdo->prepare("
+                        INSERT INTO credit_transactions 
+                            (session_id, topup_order_id, idempotency_key, transaction_type, status)
+                        VALUES 
+                            (NULL, :topup_id, :key, 'PURCHASE', 'COMMITTED')
+                        RETURNING id
+                    ");
+                    $txnStmt->execute([
+                        'topup_id' => $order['id'],
+                        'key' => $idempotencyKey
+                    ]);
+                    $txnId = (int)$txnStmt->fetchColumn();
+                } else {
+                    $txnId = Database::insertAndGetId($pdo, "
+                        INSERT INTO credit_transactions 
+                            (session_id, topup_order_id, idempotency_key, transaction_type, status)
+                        VALUES 
+                            (NULL, :topup_id, :key, 'PURCHASE', 'COMMITTED')
+                    ", [
+                        'topup_id' => $order['id'],
+                        'key' => $idempotencyKey
+                    ]);
+                }
+            }
 
-            // 7. Update user balance in credit_accounts
-            $newBalance = round($currentBalance + $creditsToAdd, 2);
-            $updBal = $pdo->prepare('UPDATE credit_accounts SET balance = :new_bal WHERE id = :acc_id');
-            $updBal->execute(['new_bal' => $newBalance, 'acc_id' => $accountId]);
+            // Insert credit ledger entry (CREDIT) if not already entered
+            $chkLedger = $pdo->prepare('SELECT id FROM credit_ledger_entries WHERE transaction_id = :txn_id AND account_id = :acc_id');
+            $chkLedger->execute(['txn_id' => $txnId, 'acc_id' => $accountId]);
+            if (!$chkLedger->fetchColumn()) {
+                $ledger = $pdo->prepare("
+                    INSERT INTO credit_ledger_entries 
+                        (transaction_id, account_id, entry_type, amount)
+                    VALUES 
+                        (:txn_id, :acc_id, 'CREDIT', :amount)
+                ");
+                $ledger->execute([
+                    'txn_id' => $txnId,
+                    'acc_id' => $accountId,
+                    'amount' => $creditsToAdd
+                ]);
+            }
 
-            // 8. Add user notification
-            $notif = $pdo->prepare('
-                INSERT INTO notifications (user_id, title, message)
-                VALUES (:uid, :title, :msg)
-            ');
-            $notif->execute([
-                'uid' => $userId,
-                'title' => 'TimeCredits Top-Up Successful!',
-                'msg' => sprintf('Your %s package top-up was completed. +%.2f TimeCredits added to your wallet.', ucfirst($packageId), $creditsToAdd)
-            ]);
+            // Atomic balance update in credit_accounts
+            $updBal = $pdo->prepare('UPDATE credit_accounts SET balance = balance + :credits WHERE id = :acc_id');
+            $updBal->execute(['credits' => $creditsToAdd, 'acc_id' => $accountId]);
 
+            // Fetch the updated balance
+            $freshBalStmt = $pdo->prepare('SELECT balance FROM credit_accounts WHERE id = :acc_id');
+            $freshBalStmt->execute(['acc_id' => $accountId]);
+            $newBalance = round((float)$freshBalStmt->fetchColumn(), 2);
+
+            // Commit the ACID transaction cleanly
             $pdo->commit();
+
+            // 6. Deliver user notification OUTSIDE the financial transaction block
+            try {
+                $notif = $pdo->prepare('
+                    INSERT INTO notifications (user_id, title, message, notification_type)
+                    VALUES (:uid, :title, :msg, :type)
+                ');
+                $notif->execute([
+                    'uid' => $userId,
+                    'title' => 'TimeCredits Top-Up Successful!',
+                    'msg' => sprintf('Your %s package top-up was completed. +%.2f TimeCredits added to your wallet.', ucfirst($packageId), $creditsToAdd),
+                    'type' => 'PAYMENT_SUCCESS'
+                ]);
+            } catch (\Throwable $notifErr) {
+                error_log('Notice: Failed delivering topup notification: ' . $notifErr->getMessage());
+            }
 
             return [
                 'already_fulfilled' => false,
@@ -313,7 +390,9 @@ class RazorpayService {
                 'order_id' => (int)$order['id']
             ];
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
     }
