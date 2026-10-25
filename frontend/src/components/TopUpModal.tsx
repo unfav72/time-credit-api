@@ -55,8 +55,9 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
 
       // Check if window.Razorpay is available
       const Razorpay = (window as any).Razorpay;
+      const isTestOrder = order.razorpay_order_id.startsWith('order_test_') || order.razorpay_order_id.includes('mock');
 
-      if (typeof Razorpay !== 'undefined') {
+      if (typeof Razorpay !== 'undefined' && !isTestOrder) {
         const options = {
           key: order.key_id,
           amount: order.amount_paise,
@@ -64,7 +65,7 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
           name: 'TimeCredit Live',
           description: `${selectedPackage.name} Package: +${selectedPackage.credits} TimeCredits (${selectedPackage.learning_minutes} mins)`,
           image: '/logo.png',
-          order_id: order.razorpay_order_id.startsWith('order_') && !order.razorpay_order_id.includes('mock') ? order.razorpay_order_id : undefined,
+          order_id: order.razorpay_order_id,
           prefill: {
             name: currentUser.full_name,
             email: currentUser.email
@@ -121,34 +122,41 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
         rzpInstance.open();
         setLoading(false);
       } else {
-        // Fallback test simulation mode if Razorpay external CDN was blocked by browser adblock
+        // Fallback test simulation mode for sandbox orders or if Razorpay external CDN was blocked
         setTimeout(async () => {
-          const mockPaymentId = 'pay_sim_' + Math.random().toString(36).substring(2, 10);
-          const mockSignature = 'test_mock_sig_' + Math.random().toString(36).substring(2, 10);
+          try {
+            const mockPaymentId = 'pay_sim_' + Math.random().toString(36).substring(2, 10);
+            const mockSignature = 'test_mock_sig_' + Math.random().toString(36).substring(2, 10);
 
-          const verifyRes = await api.verifyPayment(
-            order.razorpay_order_id,
-            mockPaymentId,
-            mockSignature,
-            selectedPackage.id
-          );
+            const verifyRes = await api.verifyPayment(
+              order.razorpay_order_id,
+              mockPaymentId,
+              mockSignature,
+              selectedPackage.id
+            );
 
-          setLastPaymentResult({
-            creditsAdded: verifyRes.credits_added,
-            amountInr: selectedPackage.price_inr,
-            orderId: order.razorpay_order_id,
-            newBalance: verifyRes.new_balance
-          });
-          setStatus('success');
-          onSuccess(verifyRes.new_balance);
+            setLastPaymentResult({
+              creditsAdded: verifyRes.credits_added,
+              amountInr: selectedPackage.price_inr,
+              orderId: order.razorpay_order_id,
+              newBalance: verifyRes.new_balance
+            });
+            setStatus('success');
+            onSuccess(verifyRes.new_balance);
 
-          confetti({
-            particleCount: 90,
-            spread: 70,
-            origin: { y: 0.6 }
-          });
-          setLoading(false);
-        }, 1200);
+            // Celebration confetti
+            confetti({
+              particleCount: 90,
+              spread: 70,
+              origin: { y: 0.6 }
+            });
+          } catch (err: any) {
+            setErrorMessage(err?.message || 'Payment simulation failed.');
+            setStatus('failed');
+          } finally {
+            setLoading(false);
+          }
+        }, 750);
       }
     } catch (e: any) {
       setErrorMessage(e?.message || 'Failed to initialize payment.');

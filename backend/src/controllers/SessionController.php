@@ -328,6 +328,7 @@ class SessionController {
                 try { $pdo->exec("SELECT setval('credit_accounts_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_accounts), 1))"); } catch (\Throwable $t) {}
                 try { $pdo->exec("SELECT setval('credit_transactions_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_transactions), 1))"); } catch (\Throwable $t) {}
                 try { $pdo->exec("SELECT setval('credit_ledger_entries_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM credit_ledger_entries), 1))"); } catch (\Throwable $t) {}
+                try { $pdo->exec("SELECT setval('notifications_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM notifications), 1))"); } catch (\Throwable $t) {}
             } else {
                 $pdo->prepare("INSERT IGNORE INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)")->execute(['uid' => $learnerId]);
                 $pdo->prepare("INSERT IGNORE INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00)")->execute(['uid' => $teacherId]);
@@ -427,7 +428,9 @@ class SessionController {
                     ->execute(['oid' => $offerId]);
             }
 
-            // Insert real-time notifications for both teacher and learner
+            $pdo->commit();
+
+            // Insert real-time notifications for both teacher and learner AFTER successful commit
             try {
                 if ($transferAmount > 0) {
                     $pdo->prepare("
@@ -449,8 +452,6 @@ class SessionController {
             } catch (\Throwable $notifErr) {
                 // Non-fatal if notifications fail
             }
-
-            $pdo->commit();
 
             AuthMiddleware::jsonResponse([
                 'message' => 'Session successfully completed and TimeCredits settled!',

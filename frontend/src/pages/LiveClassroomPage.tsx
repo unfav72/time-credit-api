@@ -59,11 +59,14 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   // WebRTC P2P Two-Way Live Video Streaming states
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
   const [hasRemoteAudio, setHasRemoteAudio] = useState(false);
+  const [isPeerScreenSharing, setIsPeerScreenSharing] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'connected' | 'failed'>('idle');
   const [reconnectKey, setReconnectKey] = useState(0);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const videoTransceiverRef = useRef<RTCRtpTransceiver | null>(null);
+  const audioTransceiverRef = useRef<RTCRtpTransceiver | null>(null);
   const lastSignalIdRef = useRef<number>(0);
 
   const handleManualReconnect = async () => {
@@ -72,6 +75,24 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     setHasRemoteAudio(false);
     if (!streamRef.current) {
       await initializeMedia(true, true);
+    } else {
+      syncLocalTracksToPeer(streamRef.current);
+    }
+    const isHost = activeSession?.teacher_id === currentUser.id || activeSession?.teacher_name === currentUser.full_name;
+    if (activeSession) {
+      if (isHost) {
+        if (pcRef.current) {
+          try {
+            const offer = await pcRef.current.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+            await pcRef.current.setLocalDescription(offer);
+            api.sendSignal(activeSession.id, 'offer', { type: offer.type, sdp: offer.sdp }).catch(console.warn);
+          } catch (e) {
+            console.warn('Manual reconnect offer error:', e);
+          }
+        }
+      } else {
+        api.sendSignal(activeSession.id, 'request-offer', { user_id: currentUser.id }).catch(console.warn);
+      }
     }
     setReconnectKey(prev => prev + 1);
   };
@@ -201,15 +222,28 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const syncLocalTracksToPeer = (stream: MediaStream | null) => {
     if (!pcRef.current || !stream) return;
     try {
-      const senders = pcRef.current.getSenders();
-      stream.getTracks().forEach(track => {
-        const existingSender = senders.find(s => s.track && s.track.kind === track.kind);
-        if (existingSender) {
-          existingSender.replaceTrack(track).catch(err => console.warn('WebRTC replaceTrack error:', err));
+      const vTrack = stream.getVideoTracks()[0];
+      if (vTrack) {
+        if (videoTransceiverRef.current?.sender) {
+          videoTransceiverRef.current.sender.replaceTrack(vTrack).catch(console.warn);
         } else {
-          pcRef.current?.addTrack(track, stream);
+          const senders = pcRef.current.getSenders();
+          const sender = senders.find(s => s.track?.kind === 'video');
+          if (sender) sender.replaceTrack(vTrack).catch(console.warn);
+          else pcRef.current.addTrack(vTrack, stream);
         }
-      });
+      }
+      const aTrack = stream.getAudioTracks()[0];
+      if (aTrack) {
+        if (audioTransceiverRef.current?.sender) {
+          audioTransceiverRef.current.sender.replaceTrack(aTrack).catch(console.warn);
+        } else {
+          const senders = pcRef.current.getSenders();
+          const sender = senders.find(s => s.track?.kind === 'audio');
+          if (sender) sender.replaceTrack(aTrack).catch(console.warn);
+          else pcRef.current.addTrack(aTrack, stream);
+        }
+      }
     } catch (e) {
       console.warn('Error syncing tracks to peer connection:', e);
     }
@@ -223,7 +257,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       }
       remoteVideoRef.current.play().catch(e => console.warn('Remote video play error:', e));
     }
-  }, [hasRemoteVideo, connectionStatus]);
+  }, [hasRemoteVideo, connectionStatus, isPeerScreenSharing]);
 
   const stopAllMediaTracks = () => {
     if (streamRef.current) {
@@ -339,13 +373,23 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     }
     setScreenSharing(false);
 
+    if (activeSession) {
+      api.sendSignal(activeSession.id, 'screen-share-stopped', { user_id: currentUser.id }).catch(console.warn);
+    }
+
     // Revert WebRTC peer connection back to camera track so learner sees camera again
-    if (pcRef.current) {
+    const cameraTrack = streamRef.current?.getVideoTracks()[0] || null;
+    if (videoTransceiverRef.current?.sender) {
+      try {
+        await videoTransceiverRef.current.sender.replaceTrack(cameraTrack);
+      } catch (err) {
+        console.warn('Reverting track error on stop screen share:', err);
+      }
+    } else if (pcRef.current) {
       try {
         const senders = pcRef.current.getSenders();
         const videoSender = senders.find(s => s.track && s.track.kind === 'video');
         if (videoSender) {
-          const cameraTrack = streamRef.current?.getVideoTracks()[0] || null;
           await videoSender.replaceTrack(cameraTrack);
         }
       } catch (err) {
@@ -376,9 +420,16 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
 
       const screenTrack = screenStream.getVideoTracks()[0];
 
+      // Broadcast to peer that screen share started
+      if (activeSession) {
+        api.sendSignal(activeSession.id, 'screen-share-started', { user_id: currentUser.id }).catch(console.warn);
+      }
+
       // WebRTC Transmission: Replace the outgoing video track on RTCPeerConnection
       // so learner receives the screen share live!
-      if (pcRef.current && screenTrack) {
+      if (videoTransceiverRef.current?.sender && screenTrack) {
+        await videoTransceiverRef.current.sender.replaceTrack(screenTrack);
+      } else if (pcRef.current && screenTrack) {
         const senders = pcRef.current.getSenders();
         const videoSender = senders.find(s => s.track && s.track.kind === 'video');
         if (videoSender) {
@@ -474,23 +525,23 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
 
     // Pre-allocate bidirectional audio and video channels so SDP offer/answer always carries video m-lines
     try {
-      pc.addTransceiver('video', { direction: 'sendrecv' });
-      pc.addTransceiver('audio', { direction: 'sendrecv' });
+      const vTrans = pc.addTransceiver('video', { direction: 'sendrecv' });
+      const aTrans = pc.addTransceiver('audio', { direction: 'sendrecv' });
+      videoTransceiverRef.current = vTrans;
+      audioTransceiverRef.current = aTrans;
+
+      if (streamRef.current) {
+        const vTrack = streamRef.current.getVideoTracks()[0];
+        if (vTrack && vTrans.sender) {
+          vTrans.sender.replaceTrack(vTrack).catch(console.warn);
+        }
+        const aTrack = streamRef.current.getAudioTracks()[0];
+        if (aTrack && aTrans.sender) {
+          aTrans.sender.replaceTrack(aTrack).catch(console.warn);
+        }
+      }
     } catch (tErr) {
       console.warn('WebRTC transceiver pre-allocation:', tErr);
-    }
-
-    // Attach local stream tracks to PC if already available
-    if (streamRef.current) {
-      const senders = pc.getSenders();
-      streamRef.current.getTracks().forEach(track => {
-        const sender = senders.find(s => s.track && s.track.kind === track.kind);
-        if (sender) {
-          sender.replaceTrack(track).catch(console.warn);
-        } else {
-          try { pc.addTrack(track, streamRef.current!); } catch {}
-        }
-      });
     }
 
     // Receive remote stream tracks
@@ -508,6 +559,23 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       }
       remoteStreamRef.current = stream;
 
+      if (event.track.kind === 'video') {
+        setHasRemoteVideo(true);
+      }
+      if (event.track.kind === 'audio') {
+        setHasRemoteAudio(true);
+      }
+      setConnectionStatus('connected');
+
+      event.track.onunmute = () => {
+        if (event.track.kind === 'video') setHasRemoteVideo(true);
+        if (event.track.kind === 'audio') setHasRemoteAudio(true);
+        if (remoteVideoRef.current && remoteStreamRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          remoteVideoRef.current.play().catch(console.warn);
+        }
+      };
+
       if (remoteVideoRef.current && stream) {
         remoteVideoRef.current.srcObject = stream;
         const playPromise = remoteVideoRef.current.play();
@@ -521,14 +589,6 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
           });
         }
       }
-
-      if (event.track.kind === 'video') {
-        setHasRemoteVideo(true);
-      }
-      if (event.track.kind === 'audio') {
-        setHasRemoteAudio(true);
-      }
-      setConnectionStatus('connected');
     };
 
     // Send local ICE candidates to peer
@@ -613,10 +673,21 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             }
           }
 
-          if (sig.signal_type === 'join' || sig.signal_type === 'request-offer') {
+          if (sig.signal_type === 'join') {
+            if (isHost && pcRef.current) {
+              await sendOffer();
+            } else if (!isHost && pcRef.current) {
+              api.sendSignal(activeSession.id, 'request-offer', { user_id: currentUser.id }).catch(() => {});
+            }
+          } else if (sig.signal_type === 'request-offer') {
             if (isHost && pcRef.current) {
               await sendOffer();
             }
+          } else if (sig.signal_type === 'screen-share-started') {
+            setIsPeerScreenSharing(true);
+            setHasRemoteVideo(true);
+          } else if (sig.signal_type === 'screen-share-stopped') {
+            setIsPeerScreenSharing(false);
           } else if (sig.signal_type === 'offer') {
             if (!isHost && pcRef.current && payload?.sdp) {
               console.log('[WebRTC] Received offer from host; setting remote description and answering...');
@@ -1248,11 +1319,13 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                   style={{
                     width: '100%',
                     height: '100%',
-                    objectFit: 'cover',
+                    objectFit: isPeerScreenSharing ? 'contain' : 'cover',
                     position: 'absolute',
                     inset: 0,
-                    display: hasRemoteVideo ? 'block' : 'none',
-                    zIndex: 1
+                    opacity: hasRemoteVideo ? 1 : 0,
+                    pointerEvents: hasRemoteVideo ? 'auto' : 'none',
+                    zIndex: 1,
+                    transition: 'opacity 0.25s ease'
                   }}
                 />
 
@@ -1263,22 +1336,22 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
                       position: 'absolute',
                       top: '1rem',
                       left: '1rem',
-                      background: 'rgba(15, 23, 42, 0.75)',
-                      backdropFilter: 'blur(8px)',
-                      padding: '0.45rem 0.85rem',
+                      background: 'rgba(15, 23, 42, 0.85)',
+                      backdropFilter: 'blur(10px)',
+                      padding: '0.45rem 0.95rem',
                       borderRadius: '14px',
                       border: '1px solid rgba(255, 255, 255, 0.2)',
                       display: 'flex',
                       alignItems: 'center',
                       gap: '0.5rem',
                       color: '#ffffff',
-                      fontSize: '0.8rem',
+                      fontSize: '0.82rem',
                       fontWeight: 700,
                       zIndex: 5
                     }}
                   >
-                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#22c55e', display: 'inline-block', boxShadow: '0 0 8px #22c55e' }} />
-                    <span>{remoteUserName} ({remoteRoleLabel})</span>
+                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: isPeerScreenSharing ? '#38bdf8' : '#22c55e', display: 'inline-block', boxShadow: isPeerScreenSharing ? '0 0 8px #38bdf8' : '0 0 8px #22c55e' }} />
+                    <span>{isPeerScreenSharing ? `🖥️ ${remoteUserName} (Sharing Screen)` : `${remoteUserName} (${remoteRoleLabel})`}</span>
                   </div>
                 )}
 
