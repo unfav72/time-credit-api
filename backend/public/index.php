@@ -346,6 +346,8 @@ try {
         RequestController::index();
     } elseif ($requestUri === '/api/v1/requests' && $method === 'POST') {
         RequestController::create();
+    } elseif (preg_match('#^/api/v1/requests/(\d+)/schedule$#', $requestUri, $matches) && $method === 'POST') {
+        RequestController::schedule((int)$matches[1]);
     } elseif (preg_match('#^/api/v1/requests/(\d+)/accept$#', $requestUri, $matches) && $method === 'POST') {
         RequestController::accept((int)$matches[1]);
     } elseif (preg_match('#^/api/v1/requests/(\d+)/reject$#', $requestUri, $matches) && $method === 'POST') {
@@ -363,6 +365,8 @@ try {
         SessionController::create();
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/join$#', $requestUri, $matches) && $method === 'POST') {
         SessionController::join((int)$matches[1]);
+    } elseif (preg_match('#^/api/v1/sessions/(\d+)/start$#', $requestUri, $matches) && $method === 'POST') {
+        SessionController::start((int)$matches[1]);
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/meeting-link$#', $requestUri, $matches) && in_array($method, ['PUT', 'POST'])) {
         SessionController::updateMeetingLink((int)$matches[1]);
     } elseif (preg_match('#^/api/v1/sessions/(\d+)/complete$#', $requestUri, $matches) && $method === 'POST') {

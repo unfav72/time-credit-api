@@ -206,6 +206,161 @@ class RequestController {
     }
 
     /**
+     * POST /api/v1/requests/{id}/schedule
+     * Allows the teacher to set/confirm the scheduled appointment date, time, duration, and optional meeting link.
+     */
+    public static function schedule(int $requestId): void {
+        $user = AuthMiddleware::requireAuth();
+        $input = AuthMiddleware::getJsonInput();
+        $pdo = Database::getCoreConnection();
+
+        Database::syncSequence($pdo, 'service_requests');
+        Database::syncSequence($pdo, 'sessions');
+        Database::syncSequence($pdo, 'notifications');
+
+        $stmt = $pdo->prepare('SELECT * FROM service_requests WHERE id = :id');
+        $stmt->execute(['id' => $requestId]);
+        $req = $stmt->fetch();
+
+        if (!$req || (int)$req['teacher_id'] !== (int)$user['id']) {
+            AuthMiddleware::jsonResponse(['error' => 'Unauthorized: Only the assigned instructor can schedule this appointment.'], 403);
+            return;
+        }
+
+        $scheduledStartAt = trim($input['scheduled_start_at'] ?? $input['proposed_start_at'] ?? '');
+        if (empty($scheduledStartAt)) {
+            $scheduledStartAt = !empty($req['proposed_start_at']) ? $req['proposed_start_at'] : date('Y-m-d H:i:s');
+        } else {
+            $ts = strtotime($scheduledStartAt);
+            if ($ts === false) {
+                AuthMiddleware::jsonResponse(['error' => 'Invalid scheduled start date and time.'], 422);
+                return;
+            }
+            $scheduledStartAt = date('Y-m-d H:i:s', $ts);
+        }
+
+        $duration = max(15, (int)($input['duration_minutes'] ?? $input['requested_duration_minutes'] ?? $req['requested_duration_minutes'] ?? 60));
+        $scheduledEndAt = date('Y-m-d H:i:s', strtotime($scheduledStartAt . " + {$duration} minutes"));
+        $customMeetingLink = trim($input['meeting_link'] ?? $input['meeting_room_id'] ?? '');
+
+        $pdo->beginTransaction();
+        try {
+            // Update request status to 'Scheduled'
+            $updReq = $pdo->prepare("
+                UPDATE service_requests 
+                SET status = 'Scheduled', proposed_start_at = :start_at, requested_duration_minutes = :dur, updated_at = NOW() 
+                WHERE id = :id
+            ");
+            $updReq->execute([
+                'start_at' => $scheduledStartAt,
+                'dur' => $duration,
+                'id' => $requestId
+            ]);
+
+            // Check if session already exists for this request
+            $chk = $pdo->prepare('SELECT id, meeting_room_id FROM sessions WHERE request_id = :rid');
+            $chk->execute(['rid' => $requestId]);
+            $existing = $chk->fetch();
+
+            $roomId = $customMeetingLink;
+            if (empty($roomId)) {
+                $roomId = !empty($existing['meeting_room_id']) ? $existing['meeting_room_id'] : ('tc-live-' . bin2hex(random_bytes(5)));
+            }
+
+            $sessionId = 0;
+            if ($existing) {
+                $sessionId = (int)$existing['id'];
+                $pdo->prepare("
+                    UPDATE sessions 
+                    SET scheduled_start_at = :start_at, scheduled_end_at = :end_at, 
+                        eligible_duration_minutes = :dur, meeting_room_id = :room_id, 
+                        status = 'SCHEDULED', updated_at = NOW() 
+                    WHERE id = :id
+                ")->execute([
+                    'start_at' => $scheduledStartAt,
+                    'end_at' => $scheduledEndAt,
+                    'dur' => $duration,
+                    'room_id' => $roomId,
+                    'id' => $sessionId
+                ]);
+            } else {
+                $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+                if ($driver === 'pgsql') {
+                    $sessStmt = $pdo->prepare("
+                        INSERT INTO sessions (request_id, teacher_id, learner_id, scheduled_start_at, scheduled_end_at, eligible_duration_minutes, meeting_room_id, status)
+                        VALUES (:request_id, :teacher_id, :learner_id, :start_at, :end_at, :dur, :room_id, 'SCHEDULED')
+                        ON CONFLICT (request_id) DO UPDATE SET 
+                            scheduled_start_at = EXCLUDED.scheduled_start_at, 
+                            scheduled_end_at = EXCLUDED.scheduled_end_at, 
+                            eligible_duration_minutes = EXCLUDED.eligible_duration_minutes,
+                            meeting_room_id = EXCLUDED.meeting_room_id,
+                            status = 'SCHEDULED', updated_at = NOW()
+                        RETURNING id
+                    ");
+                    $sessStmt->execute([
+                        'request_id' => $requestId,
+                        'teacher_id' => $req['teacher_id'],
+                        'learner_id' => $req['learner_id'],
+                        'start_at' => $scheduledStartAt,
+                        'end_at' => $scheduledEndAt,
+                        'dur' => $duration,
+                        'room_id' => $roomId
+                    ]);
+                    $sessionId = (int)$sessStmt->fetchColumn();
+                } else {
+                    $sessStmt = $pdo->prepare("
+                        INSERT INTO sessions (request_id, teacher_id, learner_id, scheduled_start_at, scheduled_end_at, eligible_duration_minutes, meeting_room_id, status)
+                        VALUES (:request_id, :teacher_id, :learner_id, :start_at, :end_at, :dur, :room_id, 'SCHEDULED')
+                    ");
+                    $sessStmt->execute([
+                        'request_id' => $requestId,
+                        'teacher_id' => $req['teacher_id'],
+                        'learner_id' => $req['learner_id'],
+                        'start_at' => $scheduledStartAt,
+                        'end_at' => $scheduledEndAt,
+                        'dur' => $duration,
+                        'room_id' => $roomId
+                    ]);
+                    $sessionId = (int)$pdo->lastInsertId();
+                    if ($sessionId <= 0) {
+                        $sessionId = (int)$pdo->query("SELECT id FROM sessions WHERE request_id = {$requestId}")->fetchColumn();
+                    }
+                }
+            }
+
+            // Fetch offer title for friendly notification
+            $offStmt = $pdo->prepare("SELECT title FROM service_offers WHERE id = :oid");
+            $offStmt->execute(['oid' => $req['offer_id']]);
+            $offTitle = $offStmt->fetchColumn() ?: 'Skill Mentorship Class';
+
+            $formattedTime = date('D, M j, Y \a\t g:i A', strtotime($scheduledStartAt));
+
+            // Notify learner with confirmed scheduled time
+            $notif = $pdo->prepare('INSERT INTO notifications (user_id, title, message) VALUES (:uid, :title, :msg)');
+            $notif->execute([
+                'uid' => $req['learner_id'],
+                'title' => 'Appointment Scheduled & Confirmed!',
+                'msg' => "Instructor {$user['full_name']} scheduled your appointment for \"{$offTitle}\" on {$formattedTime} ({$duration} mins). You will be able to join the class from your Sessions or Requests page."
+            ]);
+
+            $pdo->commit();
+
+            AuthMiddleware::jsonResponse([
+                'success' => true,
+                'message' => 'Appointment successfully scheduled and confirmed!',
+                'session_id' => $sessionId,
+                'scheduled_start_at' => $scheduledStartAt,
+                'scheduled_end_at' => $scheduledEndAt,
+                'duration_minutes' => $duration,
+                'room_id' => $roomId
+            ]);
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            AuthMiddleware::jsonResponse(['error' => 'Failed to schedule appointment: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
      * POST /api/v1/requests/{id}/reject
      */
     public static function reject(int $requestId): void {

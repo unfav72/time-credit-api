@@ -291,6 +291,17 @@ class ApiClient {
     return { roomId: res.room_id, session_id: res.session_id };
   }
 
+  async scheduleRequest(requestId: number, scheduledStartAt: string, durationMinutes: number, meetingLink?: string): Promise<{ success: boolean; session_id: number; scheduled_start_at: string; room_id: string }> {
+    return this.request(`/api/v1/requests/${requestId}/schedule`, {
+      method: 'POST',
+      body: JSON.stringify({
+        scheduled_start_at: scheduledStartAt,
+        duration_minutes: durationMinutes,
+        meeting_link: meetingLink
+      })
+    });
+  }
+
   async rejectRequest(requestId: number): Promise<void> {
     await this.request(`/api/v1/requests/${requestId}/reject`, { method: 'POST' });
   }
@@ -323,6 +334,12 @@ class ApiClient {
       method: 'POST'
     });
     return { roomId: res.room_id, isTeacher: res.is_teacher, session: res.session };
+  }
+
+  async startSession(sessionId: number): Promise<{ success: boolean; session: Session }> {
+    return this.request<{ success: boolean; session: Session }>(`/api/v1/sessions/${sessionId}/start`, {
+      method: 'POST'
+    });
   }
 
   async completeSession(sessionId: number, durationMinutes: number, durationSeconds?: number): Promise<{ transferredCredits: number }> {

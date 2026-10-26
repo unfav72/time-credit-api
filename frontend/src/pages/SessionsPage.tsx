@@ -34,7 +34,7 @@ interface SessionsPageProps {
   onNavigate: (page: string) => void;
 }
 
-type TabType = 'all' | 'live' | 'teaching' | 'learning' | 'completed';
+type TabType = 'all' | 'scheduled' | 'live' | 'teaching' | 'learning' | 'completed';
 
 export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavigate }) => {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -180,7 +180,11 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
 
   // Tab counts
   const liveCount = useMemo(
-    () => sessions.filter(s => s.status === 'IN_PROGRESS' || s.status === 'SCHEDULED').length,
+    () => sessions.filter(s => s.status === 'IN_PROGRESS').length,
+    [sessions]
+  );
+  const scheduledCount = useMemo(
+    () => sessions.filter(s => s.status === 'SCHEDULED').length,
     [sessions]
   );
   const teachingCount = useMemo(
@@ -200,7 +204,10 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
   const filteredSessions = useMemo(() => {
     return sessions.filter(sess => {
       // Tab filter
-      if (activeTab === 'live' && sess.status !== 'IN_PROGRESS' && sess.status !== 'SCHEDULED') {
+      if (activeTab === 'live' && sess.status !== 'IN_PROGRESS') {
+        return false;
+      }
+      if (activeTab === 'scheduled' && sess.status !== 'SCHEDULED') {
         return false;
       }
       if (activeTab === 'teaching' && sess.teacher_id !== currentUser.id) {
@@ -383,6 +390,39 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
             display: 'flex',
             alignItems: 'center',
             gap: '1rem',
+            background: scheduledCount > 0 ? 'linear-gradient(135deg, #fefce8 0%, #fffbeb 100%)' : 'white',
+            borderColor: scheduledCount > 0 ? '#fde68a' : undefined
+          }}
+        >
+          <div
+            style={{
+              width: '46px',
+              height: '46px',
+              borderRadius: '14px',
+              background: scheduledCount > 0 ? '#fef3c7' : '#f1f5f9',
+              color: scheduledCount > 0 ? '#d97706' : '#64748b',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            <CalendarCheck size={22} />
+          </div>
+          <div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Scheduled Appointments</div>
+            <div style={{ fontSize: '1.45rem', fontWeight: 800, color: scheduledCount > 0 ? '#d97706' : 'var(--text-main)' }}>
+              {scheduledCount}
+            </div>
+          </div>
+        </ClayCard>
+
+        <ClayCard
+          variant="raised"
+          style={{
+            padding: '1.1rem 1.25rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1rem',
             background: liveCount > 0 ? 'linear-gradient(135deg, #fef2f2 0%, #fff1f2 100%)' : 'white',
             borderColor: liveCount > 0 ? '#fca5a5' : undefined
           }}
@@ -402,7 +442,7 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
             <Video size={22} />
           </div>
           <div>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Live & Scheduled</div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Live In-Progress</div>
             <div style={{ fontSize: '1.45rem', fontWeight: 800, color: liveCount > 0 ? '#dc2626' : 'var(--text-main)' }}>
               {liveCount}
             </div>
@@ -519,6 +559,39 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
             </button>
 
             <button
+              onClick={() => setActiveTab('scheduled')}
+              style={{
+                border: 'none',
+                background: activeTab === 'scheduled' ? 'var(--primary-gradient)' : '#f1f5f9',
+                color: activeTab === 'scheduled' ? '#ffffff' : 'var(--text-muted)',
+                padding: '0.5rem 1rem',
+                borderRadius: '14px',
+                fontWeight: 700,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                boxShadow: activeTab === 'scheduled' ? 'var(--clay-shadow-btn)' : 'none',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              📅 Scheduled Appointments
+              <span
+                style={{
+                  background: activeTab === 'scheduled' ? 'rgba(255,255,255,0.25)' : '#fef3c7',
+                  color: activeTab === 'scheduled' ? '#ffffff' : '#b45309',
+                  padding: '0.1rem 0.45rem',
+                  borderRadius: '10px',
+                  fontSize: '0.75rem',
+                  fontWeight: 800
+                }}
+              >
+                {scheduledCount}
+              </span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('live')}
               style={{
                 border: 'none',
@@ -536,7 +609,7 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
                 transition: 'all 0.15s ease'
               }}
             >
-              🔴 Live & Scheduled
+              🔴 Live
               <span
                 style={{
                   background: activeTab === 'live' ? 'rgba(255,255,255,0.25)' : '#fee2e2',
@@ -1030,25 +1103,51 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({ currentUser, onNavig
                     }}
                   >
                     {/* Enter Classroom Action */}
-                    {isLiveOrScheduled && (
+                    {isInProgress && (
                       <ClayButton
-                        variant={isInProgress ? 'mint' : 'primary'}
+                        variant="mint"
                         size="md"
                         onClick={() => handleJoinClassroom(sess)}
                         disabled={isJoining}
-                        icon={isInProgress ? <Video size={16} /> : <Play size={15} />}
+                        icon={<Video size={16} />}
                         style={{
                           fontWeight: 800,
                           padding: '0.7rem 1.4rem',
-                          background: isInProgress ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : undefined
+                          background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                          color: '#ffffff'
                         }}
                       >
-                        {isJoining
-                          ? 'Entering Classroom...'
-                          : isInProgress
-                          ? 'Enter Live Classroom ➔'
-                          : 'Start / Join Classroom'}
+                        {isJoining ? 'Entering Classroom...' : '🔴 Enter Live Classroom Now ➔'}
                       </ClayButton>
+                    )}
+
+                    {isScheduled && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', alignItems: 'flex-end' }}>
+                        <ClayButton
+                          variant={isTeacher ? 'primary' : 'mint'}
+                          size="md"
+                          onClick={() => handleJoinClassroom(sess)}
+                          disabled={isJoining}
+                          icon={isTeacher ? <Play size={15} /> : <Video size={15} />}
+                          style={{
+                            fontWeight: 800,
+                            padding: '0.7rem 1.4rem',
+                            background: isTeacher 
+                              ? 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)' 
+                              : 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                            color: '#ffffff'
+                          }}
+                        >
+                          {isJoining
+                            ? 'Entering...'
+                            : isTeacher
+                            ? '🚀 Start Class & Enter Live Classroom'
+                            : '🎥 Join Scheduled Class'}
+                        </ClayButton>
+                        <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>
+                          {isTeacher ? 'Teacher launches and activates class' : 'Learner enters classroom'}
+                        </span>
+                      </div>
                     )}
 
                     {/* Review Action */}

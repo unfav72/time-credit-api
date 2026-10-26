@@ -247,22 +247,23 @@ class SessionController {
         $learnerId = (int)$session['learner_id'];
         $currentUserId = (int)$user['id'];
 
-        // If joining user is not teacher, attach as learner!
+        // If joining user is not teacher, attach as learner if empty!
         if ($currentUserId !== $teacherId) {
-            $upd = $pdo->prepare("UPDATE sessions SET learner_id = :uid, status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()), updated_at = NOW() WHERE id = :id");
-            $upd->execute(['uid' => $currentUserId, 'id' => $sessionId]);
+            if ($session['status'] === 'SCHEDULED') {
+                if (empty($session['learner_id'])) {
+                    $upd = $pdo->prepare("UPDATE sessions SET learner_id = :uid, updated_at = NOW() WHERE id = :id");
+                    $upd->execute(['uid' => $currentUserId, 'id' => $sessionId]);
+                }
+            } else {
+                $upd = $pdo->prepare("UPDATE sessions SET learner_id = :uid, status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()), updated_at = NOW() WHERE id = :id");
+                $upd->execute(['uid' => $currentUserId, 'id' => $sessionId]);
 
-            if (!empty($session['request_id'])) {
-                $updReq = $pdo->prepare("UPDATE service_requests SET learner_id = :uid, status = 'Accepted' WHERE id = :rid");
-                $updReq->execute(['uid' => $currentUserId, 'rid' => $session['request_id']]);
+                if (!empty($session['request_id'])) {
+                    $updReq = $pdo->prepare("UPDATE service_requests SET learner_id = :uid, status = 'Accepted' WHERE id = :rid");
+                    $updReq->execute(['uid' => $currentUserId, 'rid' => $session['request_id']]);
+                }
             }
             $learnerId = $currentUserId;
-        } else {
-            // Teacher entering classroom: activate SCHEDULED session to IN_PROGRESS
-            if ($session['status'] === 'SCHEDULED') {
-                $upd = $pdo->prepare("UPDATE sessions SET status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()), updated_at = NOW() WHERE id = :id");
-                $upd->execute(['id' => $sessionId]);
-            }
         }
 
         // Record participant entry safely
@@ -274,12 +275,6 @@ class SessionController {
             $part->execute(['sess_id' => $sessionId, 'user_id' => $currentUserId]);
         } catch (\Throwable $pErr) {
             // Non-fatal if participant is already registered or sequence issues
-        }
-
-        // If SCHEDULED, change to IN_PROGRESS and mark actual_start_at
-        if ($session['status'] === 'SCHEDULED') {
-            $upd = $pdo->prepare("UPDATE sessions SET status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()) WHERE id = :id");
-            $upd->execute(['id' => $sessionId]);
         }
 
         // Re-fetch the full updated session data to return directly
@@ -307,6 +302,70 @@ class SessionController {
             'session_id' => $sessionId,
             'room_id' => $refreshed['meeting_room_id'] ?? $session['meeting_room_id'],
             'is_teacher' => (int)$session['teacher_id'] === $currentUserId,
+            'session' => $refreshed
+        ]);
+    }
+
+    /**
+     * POST /api/v1/sessions/{id}/start
+     * Transitions a SCHEDULED session to IN_PROGRESS so WebRTC broadcasting and live learning begins.
+     */
+    public static function start(int $sessionId): void {
+        $user = AuthMiddleware::requireAuth();
+        $pdo = Database::getCoreConnection();
+
+        $stmt = $pdo->prepare('SELECT * FROM sessions WHERE id = :id');
+        $stmt->execute(['id' => $sessionId]);
+        $session = $stmt->fetch();
+
+        if (!$session) {
+            AuthMiddleware::jsonResponse(['error' => 'Session not found.'], 404);
+            return;
+        }
+
+        $userId = (int)$user['id'];
+        $teacherId = (int)$session['teacher_id'];
+        $learnerId = (int)$session['learner_id'];
+
+        if ($userId !== $teacherId && $userId !== $learnerId) {
+            AuthMiddleware::jsonResponse(['error' => 'Unauthorized: Only session participants can start this class.'], 403);
+            return;
+        }
+
+        $pdo->prepare("UPDATE sessions SET status = 'IN_PROGRESS', actual_start_at = COALESCE(actual_start_at, NOW()), updated_at = NOW() WHERE id = :id")
+            ->execute(['id' => $sessionId]);
+
+        if (!empty($session['request_id'])) {
+            $pdo->prepare("UPDATE service_requests SET status = 'Accepted', updated_at = NOW() WHERE id = :rid")
+                ->execute(['rid' => $session['request_id']]);
+        }
+
+        try {
+            $pdo->prepare('INSERT INTO session_participants (session_id, user_id, joined_at) VALUES (:sid, :uid, NOW())')
+                ->execute(['sid' => $sessionId, 'uid' => $userId]);
+        } catch (\Throwable $e) {}
+
+        $fullStmt = $pdo->prepare("
+            SELECT s.*, 
+                   COALESCE(so.title, 'Live Teaching Class') AS offer_title, 
+                   COALESCE(so.credit_rate, 1.00) AS credit_rate,
+                   COALESCE(sk.name, 'General Skill Exchange') AS skill_name,
+                   teacher.full_name AS teacher_name, teacher.email AS teacher_email,
+                   COALESCE(learner.full_name, 'Learner') AS learner_name, COALESCE(learner.email, '') AS learner_email
+            FROM sessions s
+            LEFT JOIN service_requests sr ON s.request_id = sr.id
+            LEFT JOIN service_offers so ON sr.offer_id = so.id
+            LEFT JOIN skills sk ON so.skill_id = sk.id
+            LEFT JOIN users teacher ON s.teacher_id = teacher.id
+            LEFT JOIN users learner ON s.learner_id = learner.id
+            WHERE s.id = :id
+        ");
+        $fullStmt->execute(['id' => $sessionId]);
+        $refreshed = $fullStmt->fetch() ?: $session;
+
+        AuthMiddleware::jsonResponse([
+            'success' => true,
+            'message' => 'Class started successfully! Session is now live in-progress.',
             'session' => $refreshed
         ]);
     }

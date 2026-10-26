@@ -1307,11 +1307,16 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const handleStartScheduledClass = async () => {
     if (!activeSession) return;
     try {
-      await api.joinSession(activeSession.id);
-      setActiveSession({
-        ...activeSession,
-        status: 'IN_PROGRESS'
-      });
+      const started = await api.startSession(activeSession.id).catch(() => null);
+      if (started?.session) {
+        setActiveSession(started.session);
+      } else {
+        await api.joinSession(activeSession.id).catch(() => {});
+        setActiveSession({
+          ...activeSession,
+          status: 'IN_PROGRESS'
+        });
+      }
       setIsTimerRunning(true);
       await initializeMedia();
     } catch (err: any) {
@@ -1668,6 +1673,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
 
   // 3. SCHEDULED CLASS WAITING ROOM STATE
   if (activeSession.status === 'SCHEDULED') {
+    const isTeacherUser = activeSession.teacher_id === currentUser.id;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '850px', margin: '2rem auto', width: '100%' }}>
         <ClayCard
@@ -1702,21 +1708,50 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
 
           <div>
             <div style={{ display: 'inline-flex', marginBottom: '0.5rem' }}>
-              <ClayBadge variant="mint">Scheduled Class Ready</ClayBadge>
+              <ClayBadge variant="mint">📅 Scheduled Class Ready</ClayBadge>
             </div>
             <h2 style={{ fontSize: '1.75rem', fontWeight: 800, color: '#0f172a' }}>
               {activeSession.offer_title || 'Upcoming Peer Learning Class'}
             </h2>
-            <div style={{ fontSize: '0.875rem', color: '#64748b', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '1rem', marginTop: '0.5rem' }}>
+
+            {activeSession.scheduled_start_at && (
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  background: '#fef3c7',
+                  border: '1px solid #fde68a',
+                  color: '#92400e',
+                  fontWeight: 700,
+                  fontSize: '0.9rem',
+                  padding: '0.45rem 1.15rem',
+                  borderRadius: '12px',
+                  margin: '0.65rem auto 0.25rem'
+                }}
+              >
+                <CalendarCheck size={16} />
+                <span>
+                  Appointment:{' '}
+                  {new Date(activeSession.scheduled_start_at).toLocaleString([], {
+                    dateStyle: 'medium',
+                    timeStyle: 'short'
+                  })}
+                </span>
+              </div>
+            )}
+
+            <div style={{ fontSize: '0.875rem', color: '#64748b', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '1rem', marginTop: '0.75rem' }}>
               <span>👨‍🏫 Teacher: <strong>{activeSession.teacher_name || currentUser.full_name}</strong></span>
               <span>👨‍🎓 Learner: <strong>{activeSession.learner_name || 'Open to peer'}</strong></span>
+              <span>⏱️ Duration: <strong>{activeSession.eligible_duration_minutes || 60} mins</strong></span>
               <span>💰 Rate: <strong>{Number(activeSession.credit_rate || 1.0).toFixed(2)} TC / hr</strong></span>
             </div>
           </div>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.85rem', justifyContent: 'center', marginTop: '1rem' }}>
             <ClayButton variant="mint" onClick={handleStartScheduledClass} icon={<Video size={16} />}>
-              Start & Enter Live Classroom Now
+              {isTeacherUser ? 'Start & Enter Live Classroom Now' : 'Join Live Classroom Now'}
             </ClayButton>
             <ClayButton variant="secondary" onClick={() => onNavigate('sessions')} icon={<CalendarCheck size={16} />}>
               View All Sessions

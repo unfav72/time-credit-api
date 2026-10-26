@@ -292,8 +292,8 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
                 </div>
               </div>
 
-              <ClayButton variant="primary" onClick={() => handleOpenBooking(offer)} icon={<Video size={14} />}>
-                Request Session
+              <ClayButton variant="primary" onClick={() => handleOpenBooking(offer)} icon={<Calendar size={14} />}>
+                Get Appointment
               </ClayButton>
             </div>
           </ClayCard>
@@ -304,20 +304,20 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
       <ClayModal
         isOpen={requestModalOpen}
         onClose={() => setRequestModalOpen(false)}
-        title={bookingSuccess ? 'Booking Request Submitted!' : `Request Session: ${selectedOffer?.title}`}
+        title={bookingSuccess ? 'Appointment Request Sent!' : `📅 Get Appointment: ${selectedOffer?.title}`}
       >
         {bookingSuccess ? (
           <div style={{ textAlign: 'center', padding: '1rem 0' }}>
             <div style={{ width: '60px', height: '60px', borderRadius: '50%', background: 'var(--pastel-mint-bg)', color: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
               <CheckCircle2 size={32} />
             </div>
-            <h3 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Request Sent to {selectedOffer?.teacher_name}!</h3>
-            <p style={{ color: '#475569', fontSize: '0.9rem', marginTop: '0.5rem' }}>
-              Your session request has been entered into the database with status <code>Pending</code>. Once accepted by the teacher, the in-built meeting room will be scheduled!
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Appointment Requested with {selectedOffer?.teacher_name}!</h3>
+            <p style={{ color: '#475569', fontSize: '0.9rem', marginTop: '0.5rem', lineHeight: 1.5 }}>
+              Your appointment request is now with the instructor. Once the teacher confirms and schedules the meeting time, you will be notified and can easily join the live class from your Sessions or Requests dashboard!
             </p>
             <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'center', gap: '0.75rem' }}>
               <ClayButton variant="primary" onClick={() => onNavigate('requests')}>
-                View Service Requests
+                View Appointment Requests
               </ClayButton>
               <ClayButton variant="secondary" onClick={() => setRequestModalOpen(false)}>
                 Close
@@ -397,7 +397,7 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
                 disabled={hasInsufficientCredits}
                 title={hasInsufficientCredits ? 'Please top up credits before requesting this session' : ''}
               >
-                {hasInsufficientCredits ? 'Insufficient Credits' : 'Submit Request'}
+                {hasInsufficientCredits ? 'Insufficient Credits' : 'Submit Appointment Request'}
               </ClayButton>
             </div>
           </div>
