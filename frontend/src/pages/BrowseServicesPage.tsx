@@ -100,6 +100,7 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
         description: hostDesc || 'Live interactive online teaching and learning session.'
       });
       if (res?.session_id) {
+        sessionStorage.removeItem(`tc_ended_session_${res.session_id}`);
         sessionStorage.setItem('active_classroom_session_id', String(res.session_id));
       }
       setHostModalOpen(false);
@@ -114,6 +115,7 @@ export const BrowseServicesPage: React.FC<BrowseServicesPageProps> = ({ currentU
   const handleJoinLive = async (session: Session) => {
     setJoiningSessionId(session.id);
     try {
+      sessionStorage.removeItem(`tc_ended_session_${session.id}`);
       sessionStorage.setItem('active_classroom_session_id', String(session.id));
       await api.joinSession(session.id);
       onNavigate('classroom');

@@ -418,6 +418,10 @@ class SessionController {
         } catch (\Throwable $ignored) {}
 
         $durationMinutes = max(0, (int)($input['duration_minutes'] ?? 0));
+        $durationSeconds = max(0, (int)($input['duration_seconds'] ?? ($durationMinutes * 60)));
+        if ($durationMinutes <= 0 && $durationSeconds > 0) {
+            $durationMinutes = max(1, (int)ceil($durationSeconds / 60));
+        }
         $idempotencyKey = $input['idempotency_key'] ?? ('SETTLE_' . $sessionId . '_' . time());
 
         // 2. Fetch session with resilient LEFT JOINs
@@ -464,6 +468,18 @@ class SessionController {
                         ->execute(['uid' => $currentUserId, 'rid' => $session['request_id']]);
                 }
             } catch (\Throwable $e) {}
+        } elseif ($learnerId === $teacherId) {
+            // Check session_participants for joined learner
+            try {
+                $partStmt = $pdo->prepare("SELECT user_id FROM session_participants WHERE session_id = :sid AND user_id != :tid ORDER BY joined_at DESC LIMIT 1");
+                $partStmt->execute(['sid' => $sessionId, 'tid' => $teacherId]);
+                $foundLearner = (int)$partStmt->fetchColumn();
+                if ($foundLearner > 0) {
+                    $pdo->prepare("UPDATE sessions SET learner_id = :uid, updated_at = NOW() WHERE id = :id")
+                        ->execute(['uid' => $foundLearner, 'id' => $sessionId]);
+                    $learnerId = $foundLearner;
+                }
+            } catch (\Throwable $e) {}
         }
 
         // Pre-sync PostgreSQL sequences safely
@@ -479,8 +495,13 @@ class SessionController {
         $alreadySettled = (float)($session['already_settled'] ?? 0.00);
 
         $totalDue = 0.00;
-        if ($isPeerSession && $durationMinutes > 0) {
-            $totalDue = round(($durationMinutes / 60.0) * $creditRate, 2);
+        if ($isPeerSession && ($durationSeconds > 0 || $durationMinutes > 0)) {
+            $effectiveSecs = max($durationSeconds, $durationMinutes * 60);
+            $totalDue = round(($effectiveSecs / 3600.0) * $creditRate, 2);
+            // Ensure at least 0.01 TC if call lasted >= 10 seconds
+            if ($effectiveSecs >= 10 && $totalDue < 0.01) {
+                $totalDue = 0.01;
+            }
         }
 
         // Remaining delta to settle at completion
@@ -500,11 +521,18 @@ class SessionController {
         $pdo->beginTransaction();
         try {
             if ($remainingTransfer > 0.00 && $isPeerSession) {
-                // Ensure credit accounts exist with ON CONFLICT DO NOTHING
-                $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
-                    ->execute(['uid' => $learnerId]);
-                $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
-                    ->execute(['uid' => $teacherId]);
+                $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+                if ($driver === 'pgsql' || $driver === 'sqlite') {
+                    $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
+                        ->execute(['uid' => $learnerId]);
+                    $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
+                        ->execute(['uid' => $teacherId]);
+                } else {
+                    $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON DUPLICATE KEY UPDATE user_id=user_id')
+                        ->execute(['uid' => $learnerId]);
+                    $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON DUPLICATE KEY UPDATE user_id=user_id')
+                        ->execute(['uid' => $teacherId]);
+                }
 
                 $lStmt = $pdo->prepare('SELECT id, balance FROM credit_accounts WHERE user_id = :uid FOR UPDATE');
                 $lStmt->execute(['uid' => $learnerId]);
@@ -518,9 +546,9 @@ class SessionController {
                     $avail = (float)$learnerAcc['balance'];
                     if ($avail < $remainingTransfer) {
                         if ($avail <= 0.00) {
-                            $pdo->prepare('UPDATE credit_accounts SET balance = 1.00, updated_at = NOW() WHERE id = :id')
+                            $pdo->prepare('UPDATE credit_accounts SET balance = 5.00, updated_at = NOW() WHERE id = :id')
                                 ->execute(['id' => $learnerAcc['id']]);
-                            $avail = 1.00;
+                            $avail = 5.00;
                         }
                         $remainingTransfer = min($remainingTransfer, $avail);
                     }
@@ -678,6 +706,28 @@ class SessionController {
 
         $teacherId = (int)$session['teacher_id'];
         $learnerId = (int)$session['learner_id'];
+        $currentUserId = (int)$user['id'];
+
+        if ($learnerId <= 0 || $learnerId === $teacherId) {
+            if ($currentUserId !== $teacherId) {
+                try {
+                    $pdo->prepare("UPDATE sessions SET learner_id = :uid, updated_at = NOW() WHERE id = :id")
+                        ->execute(['uid' => $currentUserId, 'id' => $sessionId]);
+                    $learnerId = $currentUserId;
+                } catch (\Throwable $e) {}
+            } else {
+                try {
+                    $partStmt = $pdo->prepare("SELECT user_id FROM session_participants WHERE session_id = :sid AND user_id != :tid ORDER BY joined_at DESC LIMIT 1");
+                    $partStmt->execute(['sid' => $sessionId, 'tid' => $teacherId]);
+                    $foundLearner = (int)$partStmt->fetchColumn();
+                    if ($foundLearner > 0) {
+                        $pdo->prepare("UPDATE sessions SET learner_id = :uid, updated_at = NOW() WHERE id = :id")
+                            ->execute(['uid' => $foundLearner, 'id' => $sessionId]);
+                        $learnerId = $foundLearner;
+                    }
+                } catch (\Throwable $e) {}
+            }
+        }
 
         if ($learnerId <= 0 || $learnerId === $teacherId) {
             AuthMiddleware::jsonResponse([
@@ -695,6 +745,9 @@ class SessionController {
 
         // Hourly rate: 1 hr (3600s) = creditRate TimeCredits
         $totalDue = round(($elapsedSeconds / 3600.0) * $creditRate, 2);
+        if ($elapsedSeconds >= 10 && $totalDue < 0.01) {
+            $totalDue = 0.01;
+        }
         $delta = round($totalDue - $alreadySettled, 2);
 
         Database::syncSequence($pdo, 'credit_accounts');
@@ -702,10 +755,18 @@ class SessionController {
         Database::syncSequence($pdo, 'credit_ledger_entries');
 
         try {
-            $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
-                ->execute(['uid' => $learnerId]);
-            $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
-                ->execute(['uid' => $teacherId]);
+            $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+            if ($driver === 'pgsql' || $driver === 'sqlite') {
+                $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
+                    ->execute(['uid' => $learnerId]);
+                $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON CONFLICT (user_id) DO NOTHING')
+                    ->execute(['uid' => $teacherId]);
+            } else {
+                $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON DUPLICATE KEY UPDATE user_id=user_id')
+                    ->execute(['uid' => $learnerId]);
+                $pdo->prepare('INSERT INTO credit_accounts (user_id, balance) VALUES (:uid, 0.00) ON DUPLICATE KEY UPDATE user_id=user_id')
+                    ->execute(['uid' => $teacherId]);
+            }
         } catch (\Throwable $e) {}
 
         while ($pdo->inTransaction()) {

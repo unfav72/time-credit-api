@@ -49,6 +49,30 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
 
+  const isHost = Boolean(activeSession && (
+    activeSession.teacher_id === currentUser.id ||
+    activeSession.teacher_name === currentUser.full_name
+  ));
+
+  const isLearner = Boolean(activeSession && (
+    activeSession.learner_id === currentUser.id ||
+    activeSession.learner_name === currentUser.full_name ||
+    (!isHost && activeSession.teacher_id !== currentUser.id)
+  ));
+
+  const isSoloSession = Boolean(activeSession && (
+    !activeSession.learner_id ||
+    activeSession.teacher_id === activeSession.learner_id ||
+    activeSession.learner_name?.toLowerCase().includes('waiting')
+  ));
+
+  const remoteUserName = isHost
+    ? (activeSession?.learner_name || 'Student / Peer')
+    : (activeSession?.teacher_name || 'Teaching Staff');
+
+  const remoteUserInitial = remoteUserName.charAt(0).toUpperCase();
+  const remoteRoleLabel = isHost ? 'Student' : 'Teaching Staff';
+
   // Real WebRTC MediaStream states
   const [cameraActive, setCameraActive] = useState(false);
   const [micActive, setMicActive] = useState(false);
@@ -114,14 +138,27 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
   const [completedSessionId, setCompletedSessionId] = useState<number | null>(null);
+  const [sessionSummary, setSessionSummary] = useState<{
+    id: number;
+    title: string;
+    skill_name: string;
+    teacher_name: string;
+    learner_name: string;
+    duration_minutes: number;
+    duration_seconds: number;
+    credits: number;
+    isHost: boolean;
+  } | null>(null);
   const learnerJoinedAtRef = useRef<number | null>(null);
+  const elapsedSecondsRef = useRef<number>(0);
 
   // Real-time automatic TimeCredit streaming and balance status
   const [liveStreamingStatus, setLiveStreamingStatus] = useState<{ delta: number; total: number; timestamp: number } | null>(null);
   const [insufficientCreditsWarning, setInsufficientCreditsWarning] = useState(false);
 
   // Persistent Session Start Time across page changes, tab switches, and reloads
-  const getPersistedSessionStartTime = (sessionId: number, actualStartAt?: string | null): number | null => {
+  // Cleanly starts from 0 unless an active in-session timestamp is already stored
+  const getPersistedSessionStartTime = (sessionId: number): number | null => {
     if (!sessionId) return null;
     const storageKey = `tc_session_start_${sessionId}`;
     const stored = localStorage.getItem(storageKey);
@@ -131,20 +168,11 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         return parsed;
       }
     }
-
-    if (actualStartAt) {
-      const serverTime = new Date(actualStartAt).getTime();
-      if (!isNaN(serverTime) && serverTime > 0 && serverTime <= Date.now()) {
-        localStorage.setItem(storageKey, String(serverTime));
-        return serverTime;
-      }
-    }
-
     return null;
   };
 
-  const ensureSessionStartTime = (sessionId: number, actualStartAt?: string | null): number => {
-    let startTime = getPersistedSessionStartTime(sessionId, actualStartAt);
+  const ensureSessionStartTime = (sessionId: number): number => {
+    let startTime = getPersistedSessionStartTime(sessionId);
     if (!startTime) {
       startTime = Date.now();
       localStorage.setItem(`tc_session_start_${sessionId}`, String(startTime));
@@ -188,38 +216,27 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       const targetedId = sessionStorage.getItem('active_classroom_session_id');
       let current: Session | null = null;
 
-      // 1. If user specifically targeted a session from Browse or Sessions page:
+      // 1. If user specifically targeted a session from Browse, Service Requests, or Sessions page:
       if (targetedId) {
-        try {
-          await api.joinSession(Number(targetedId)).catch(console.warn);
-          const targetSession = await api.getSession(Number(targetedId)).catch(() => null);
-          if (targetSession && (targetSession.status === 'IN_PROGRESS' || targetSession.status === 'SCHEDULED')) {
-            current = targetSession;
-          }
-        } catch (tErr) {
-          console.warn('Target session load error:', tErr);
-        }
-      }
-
-      // 2. If no valid targeted session, query user's personal sessions:
-      if (!current) {
-        const list = await api.getSessions().catch(() => []);
-        current = list.find(s => s.status === 'IN_PROGRESS' || s.status === 'SCHEDULED') || null;
-      }
-
-      // 3. Fallback: Check open live sessions across platform:
-      if (!current) {
-        const liveList = await api.getLiveSessions().catch(() => []);
-        if (liveList.length > 0) {
-          const liveCandidate = liveList[0];
-          if (liveCandidate.status === 'IN_PROGRESS' || liveCandidate.status === 'SCHEDULED') {
-            current = liveCandidate;
-            api.joinSession(current.id).catch(console.warn);
+        // If this session was previously ended, clear it and do not re-load
+        if (sessionStorage.getItem(`tc_ended_session_${targetedId}`) === 'true') {
+          sessionStorage.removeItem('active_classroom_session_id');
+        } else {
+          try {
+            await api.joinSession(Number(targetedId)).catch(console.warn);
+            const targetSession = await api.getSession(Number(targetedId)).catch(() => null);
+            if (targetSession && (targetSession.status === 'IN_PROGRESS' || targetSession.status === 'SCHEDULED')) {
+              current = targetSession;
+            } else {
+              sessionStorage.removeItem('active_classroom_session_id');
+            }
+          } catch (tErr) {
+            console.warn('Target session load error:', tErr);
           }
         }
       }
 
-      // If no active session or if completed, clear storage and show empty classroom:
+      // If no valid targeted active session, user entered classroom in clean idle mode:
       if (!current || current.status === 'COMPLETED' || current.status === 'CANCELLED') {
         sessionStorage.removeItem('active_classroom_session_id');
         if (current) {
@@ -244,14 +261,14 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
           }
 
           if (isLearnerPresent) {
-            const startTs = ensureSessionStartTime(current.id, current.actual_start_at);
+            const startTs = ensureSessionStartTime(current.id);
             learnerJoinedAtRef.current = startTs;
             const initialElapsed = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
             setElapsedSeconds(initialElapsed);
             setIsTimerRunning(true);
           } else {
             // Solo host waiting for learner; check if previously running
-            const existingStart = getPersistedSessionStartTime(current.id, current.actual_start_at);
+            const existingStart = getPersistedSessionStartTime(current.id);
             if (existingStart) {
               learnerJoinedAtRef.current = existingStart;
               setElapsedSeconds(Math.max(0, Math.floor((Date.now() - existingStart) / 1000)));
@@ -295,6 +312,11 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     }
   }, [cameraActive, hasMediaStream]);
 
+  // Keep elapsedSecondsRef in sync
+  useEffect(() => {
+    elapsedSecondsRef.current = elapsedSeconds;
+  }, [elapsedSeconds]);
+
   // Timer runs continuously in the background across tab switches and page navigations
   useEffect(() => {
     let interval: any = null;
@@ -304,10 +326,10 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     const isLearnerPresent = hasJoinedLearner || (!isHostUser) || peerConnected;
 
     if (activeSession?.status === 'IN_PROGRESS') {
-      const persistedStart = getPersistedSessionStartTime(activeSession.id, activeSession.actual_start_at);
+      const persistedStart = getPersistedSessionStartTime(activeSession.id);
 
       if (isLearnerPresent || persistedStart) {
-        const startTs = ensureSessionStartTime(activeSession.id, activeSession.actual_start_at);
+        const startTs = ensureSessionStartTime(activeSession.id);
         learnerJoinedAtRef.current = startTs;
         setIsTimerRunning(true);
 
@@ -319,7 +341,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         api.sendSignal(activeSession.id, 'session-time-sync', { start_time: startTs }).catch(() => {});
 
         interval = setInterval(() => {
-          const activeStart = getPersistedSessionStartTime(activeSession.id, activeSession.actual_start_at) || startTs;
+          const activeStart = getPersistedSessionStartTime(activeSession.id) || startTs;
           const secs = Math.max(0, Math.floor((Date.now() - activeStart) / 1000));
           setElapsedSeconds(secs);
         }, 1000);
@@ -345,12 +367,14 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     const peerConnected = connectionStatus === 'connected' || hasRemoteVideo || hasRemoteAudio;
     const isLearnerPresent = hasJoinedLearner || (!isHostUser) || peerConnected;
 
-    // Only stream credits when learner is present and at least 15s elapsed
-    if (!isLearnerPresent || elapsedSeconds < 15) return;
+    if (!isLearnerPresent) return;
 
     const streamSettlement = async () => {
+      const currentSecs = elapsedSecondsRef.current;
+      if (currentSecs < 10) return; // Wait at least 10s before streaming
+
       try {
-        const res = await api.autoSettleSession(activeSession.id, elapsedSeconds);
+        const res = await api.autoSettleSession(activeSession.id, currentSecs);
         if (res.success) {
           if (res.insufficient_credits) {
             setInsufficientCreditsWarning(true);
@@ -387,9 +411,9 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       }
     };
 
-    const interval = setInterval(streamSettlement, 25000);
+    const interval = setInterval(streamSettlement, 12000);
     return () => clearInterval(interval);
-  }, [activeSession?.id, activeSession?.status, activeSession?.learner_id, elapsedSeconds, connectionStatus]);
+  }, [activeSession?.id, activeSession?.status, activeSession?.learner_id, connectionStatus, hasRemoteVideo, hasRemoteAudio]);
 
   // Synchronize local audio/video tracks to active RTCPeerConnection
   const syncLocalTracksToPeer = (stream: MediaStream | null) => {
@@ -923,7 +947,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
           } else if (sig.signal_type === 'session-time-sync') {
             if (payload?.start_time && typeof payload.start_time === 'number') {
               const peerStart = payload.start_time;
-              const localStart = getPersistedSessionStartTime(activeSession.id, activeSession.actual_start_at);
+              const localStart = getPersistedSessionStartTime(activeSession.id);
               if (!localStart || peerStart < localStart) {
                 localStorage.setItem(`tc_session_start_${activeSession.id}`, String(peerStart));
                 learnerJoinedAtRef.current = peerStart;
@@ -959,15 +983,37 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
           } else if (sig.signal_type === 'session-ended') {
             console.log('[WebRTC] Peer notified that session has completed and settled:', payload);
             sessionStorage.removeItem('active_classroom_session_id');
+            sessionStorage.setItem(`tc_ended_session_${activeSession.id}`, 'true');
             localStorage.removeItem(`tc_session_start_${activeSession.id}`);
             const creds = Number(payload?.credits ?? accruedCredits);
             const dur = Number(payload?.duration ?? elapsedMinutes);
+            const durSecs = Number(payload?.duration_seconds ?? elapsedSeconds);
             setSettledResult({ credits: creds, duration: dur });
             setCompletedSessionId(activeSession.id);
-            setSettleModalOpen(true);
             stopAllMediaTracks();
             setIsTimerRunning(false);
             learnerJoinedAtRef.current = null;
+
+            if (isLearner) {
+              currentUser.balance = Math.max(0, currentUser.balance - creds);
+            } else {
+              currentUser.balance = currentUser.balance + creds;
+            }
+
+            setSessionSummary({
+              id: activeSession.id,
+              title: activeSession.offer_title || activeSession.skill_name || 'Live Class',
+              skill_name: activeSession.skill_name || 'Skill Mentoring',
+              teacher_name: activeSession.teacher_name || 'Instructor',
+              learner_name: activeSession.learner_name || 'Student',
+              duration_minutes: dur,
+              duration_seconds: durSecs,
+              credits: creds,
+              isHost: isHost
+            });
+            setActiveSession(null);
+            setSettleModalOpen(false);
+
             confetti({
               particleCount: 90,
               spread: 70,
@@ -1031,15 +1077,29 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         const s = await api.getSession(activeSession.id).catch(() => null);
         if (s && (s.status === 'COMPLETED' || s.status === 'CANCELLED')) {
           console.log('[Classroom] Server session marked COMPLETED:', s.id);
+          sessionStorage.setItem(`tc_ended_session_${s.id}`, 'true');
           sessionStorage.removeItem('active_classroom_session_id');
           localStorage.removeItem(`tc_session_start_${s.id}`);
           stopAllMediaTracks();
           setIsTimerRunning(false);
           learnerJoinedAtRef.current = null;
-          setActiveSession(null);
-          setSettledResult({ credits: Math.max(Number(s.settled_credits || 0), accruedCredits), duration: elapsedMinutes });
+          const finalCreds = Math.max(Number(s.settled_credits || 0), accruedCredits);
+          setSettledResult({ credits: finalCreds, duration: elapsedMinutes });
           setCompletedSessionId(s.id);
-          setSettleModalOpen(true);
+
+          setSessionSummary({
+            id: s.id,
+            title: s.offer_title || s.skill_name || 'Live Class',
+            skill_name: s.skill_name || 'Skill Mentoring',
+            teacher_name: s.teacher_name || 'Instructor',
+            learner_name: s.learner_name || 'Student',
+            duration_minutes: elapsedMinutes,
+            duration_seconds: elapsedSeconds,
+            credits: finalCreds,
+            isHost: isHost
+          });
+          setActiveSession(null);
+          setSettleModalOpen(false);
         }
       } catch (err) {
         // Silently handled
@@ -1047,7 +1107,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [activeSession?.id, activeSession?.status, accruedCredits, elapsedMinutes]);
+  }, [activeSession?.id, activeSession?.status, accruedCredits, elapsedMinutes, elapsedSeconds, isHost]);
 
   const handleEndAndSettle = async () => {
     setSettling(true);
@@ -1055,22 +1115,46 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     const sid = activeSession?.id;
 
     try {
-      sessionStorage.removeItem('active_classroom_session_id');
-      if (activeSession) {
-        localStorage.removeItem(`tc_session_start_${activeSession.id}`);
+      if (sid) {
+        sessionStorage.setItem(`tc_ended_session_${sid}`, 'true');
+        localStorage.removeItem(`tc_session_start_${sid}`);
       }
+      sessionStorage.removeItem('active_classroom_session_id');
 
+      let transferredCreds = accruedCredits;
       if (activeSession) {
-        const res = await api.completeSession(activeSession.id, elapsedMinutes);
+        const res = await api.completeSession(activeSession.id, elapsedMinutes, elapsedSeconds);
+        transferredCreds = res.transferredCredits;
         setSettledResult({ credits: res.transferredCredits, duration: elapsedMinutes });
         setCompletedSessionId(activeSession.id);
+
+        // Immediately update local balance in current user session
+        if (isLearner) {
+          currentUser.balance = Math.max(0, currentUser.balance - res.transferredCredits);
+        } else {
+          currentUser.balance = currentUser.balance + res.transferredCredits;
+        }
 
         // Notify peer via WebRTC signal that session ended and credits were settled!
         api.sendSignal(activeSession.id, 'session-ended', {
           ended_by: currentUser.id,
           credits: res.transferredCredits,
-          duration: elapsedMinutes
+          duration: elapsedMinutes,
+          duration_seconds: elapsedSeconds
         }).catch(console.warn);
+
+        // Record session summary for the post-session view!
+        setSessionSummary({
+          id: activeSession.id,
+          title: activeSession.offer_title || activeSession.skill_name || 'Live Class',
+          skill_name: activeSession.skill_name || 'Skill Mentoring',
+          teacher_name: activeSession.teacher_name || 'Instructor',
+          learner_name: activeSession.learner_name || 'Student',
+          duration_minutes: elapsedMinutes,
+          duration_seconds: elapsedSeconds,
+          credits: res.transferredCredits,
+          isHost: isHost
+        });
       } else {
         setSettledResult({ credits: accruedCredits, duration: elapsedMinutes });
       }
@@ -1078,6 +1162,8 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       stopAllMediaTracks();
       setIsTimerRunning(false);
       learnerJoinedAtRef.current = null;
+      setActiveSession(null);
+      setSettleModalOpen(false);
 
       confetti({
         particleCount: 90,
@@ -1086,7 +1172,10 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       });
     } catch (e: any) {
       console.warn('Settlement fallback triggered:', e);
-      // Resilient fallback: ensure camera/mic stops, classroom storage clears, and modal finishes cleanly
+      if (sid) {
+        sessionStorage.setItem(`tc_ended_session_${sid}`, 'true');
+        localStorage.removeItem(`tc_session_start_${sid}`);
+      }
       sessionStorage.removeItem('active_classroom_session_id');
       stopAllMediaTracks();
       setIsTimerRunning(false);
@@ -1094,11 +1183,23 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
       setSettledResult({ credits: accruedCredits || 0, duration: elapsedMinutes });
       if (activeSession) {
         setCompletedSessionId(activeSession.id);
+        setSessionSummary({
+          id: activeSession.id,
+          title: activeSession.offer_title || activeSession.skill_name || 'Live Class',
+          skill_name: activeSession.skill_name || 'Skill Mentoring',
+          teacher_name: activeSession.teacher_name || 'Instructor',
+          learner_name: activeSession.learner_name || 'Student',
+          duration_minutes: elapsedMinutes,
+          duration_seconds: elapsedSeconds,
+          credits: accruedCredits || 0,
+          isHost: isHost
+        });
       }
+      setActiveSession(null);
+      setSettleModalOpen(false);
     } finally {
       setSettling(false);
     }
-
   };
 
   const handleSaveMeetLink = async () => {
@@ -1139,9 +1240,6 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
         spread: 50,
         origin: { y: 0.7 }
       });
-      setTimeout(() => {
-        handleExitClassroom('classroom');
-      }, 1500);
     } catch (err: any) {
       alert('Error submitting review: ' + (err?.message || 'Failed saving review'));
     } finally {
@@ -1152,6 +1250,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   const handleExitClassroom = (targetPage: string = 'classroom') => {
     sessionStorage.removeItem('active_classroom_session_id');
     if (activeSession) {
+      sessionStorage.setItem(`tc_ended_session_${activeSession.id}`, 'true');
       localStorage.removeItem(`tc_session_start_${activeSession.id}`);
     }
     stopAllMediaTracks();
@@ -1159,6 +1258,7 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     learnerJoinedAtRef.current = null;
     setSettleModalOpen(false);
     setActiveSession(null);
+    setSessionSummary(null);
     setSettledResult(null);
     setElapsedSeconds(0);
     setReviewSubmitted(false);
@@ -1295,6 +1395,214 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
     );
   }
 
+  // 1.5. SESSION SUMMARY STATE: Shown right after completing/settling a live class
+  if (!activeSession && sessionSummary) {
+    const isLearnerRole = !sessionSummary.isHost;
+    const durMins = Math.floor(sessionSummary.duration_seconds / 60);
+    const durSecs = sessionSummary.duration_seconds % 60;
+    const durString = durMins > 0 ? `${durMins}m ${durSecs}s` : `${durSecs}s`;
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '850px', margin: '2rem auto', width: '100%', padding: '0 1rem' }}>
+        <ClayCard
+          variant="raised"
+          style={{
+            padding: '3rem 2.5rem',
+            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '1.5rem',
+            borderRadius: '28px',
+            background: 'linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)',
+            boxShadow: '0 20px 40px -15px rgba(0,0,0,0.07)'
+          }}
+        >
+          {/* Header Icon */}
+          <div
+            style={{
+              width: '88px',
+              height: '88px',
+              borderRadius: '28px',
+              background: 'linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%)',
+              color: '#059669',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 10px 25px rgba(16, 185, 129, 0.25)'
+            }}
+          >
+            <CheckCircle2 size={44} />
+          </div>
+
+          <div>
+            <div style={{ display: 'inline-flex', marginBottom: '0.65rem' }}>
+              <ClayBadge variant="lavender">🎉 Session Completed & Credits Settled</ClayBadge>
+            </div>
+            <h2 style={{ fontSize: '2rem', fontWeight: 800, color: '#0f172a', letterSpacing: '-0.02em', margin: 0 }}>
+              Session Concluded Successfully
+            </h2>
+            <p style={{ color: '#64748b', fontSize: '1rem', maxWidth: '580px', margin: '0.75rem auto 0', lineHeight: 1.6 }}>
+              {isLearnerRole
+                ? `You completed your learning session with ${sessionSummary.teacher_name}. TimeCredits have been safely deducted and transferred.`
+                : `You finished mentoring ${sessionSummary.learner_name}. Your earned TimeCredits have been deposited into your balance.`
+              }
+            </p>
+          </div>
+
+          {/* Stats Grid */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+              gap: '1rem',
+              width: '100%',
+              maxWidth: '680px',
+              marginTop: '0.5rem'
+            }}
+          >
+            <div style={{ padding: '1.25rem', borderRadius: '18px', background: '#f8fafc', border: '1px solid #e2e8f0', textAlign: 'left' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#64748b', fontSize: '0.825rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                <Clock size={16} color="#6366f1" />
+                <span>Elapsed Duration</span>
+              </div>
+              <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#0f172a' }}>
+                {durString}
+              </div>
+              <span style={{ fontSize: '0.775rem', color: '#94a3b8' }}>Verified call time</span>
+            </div>
+
+            <div style={{ padding: '1.25rem', borderRadius: '18px', background: isLearnerRole ? '#fef2f2' : '#f0fdf4', border: isLearnerRole ? '1px solid #fecaca' : '1px solid #bbf7d0', textAlign: 'left' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: isLearnerRole ? '#991b1b' : '#166534', fontSize: '0.825rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                <Coins size={16} color={isLearnerRole ? '#dc2626' : '#16a34a'} />
+                <span>{isLearnerRole ? 'Credits Deducted' : 'Credits Earned'}</span>
+              </div>
+              <div style={{ fontSize: '1.4rem', fontWeight: 800, color: isLearnerRole ? '#dc2626' : '#16a34a' }}>
+                {isLearnerRole ? `-${Number(sessionSummary.credits).toFixed(2)} TC` : `+${Number(sessionSummary.credits).toFixed(2)} TC`}
+              </div>
+              <span style={{ fontSize: '0.775rem', color: isLearnerRole ? '#b91c1c' : '#15803d' }}>
+                Balance: {Number(currentUser.balance || 0).toFixed(2)} TC
+              </span>
+            </div>
+
+            <div style={{ padding: '1.25rem', borderRadius: '18px', background: '#f8fafc', border: '1px solid #e2e8f0', textAlign: 'left' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#64748b', fontSize: '0.825rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                <Users size={16} color="#0284c7" />
+                <span>{isLearnerRole ? 'Teacher' : 'Student'}</span>
+              </div>
+              <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {isLearnerRole ? sessionSummary.teacher_name : sessionSummary.learner_name}
+              </div>
+              <span style={{ fontSize: '0.775rem', color: '#94a3b8' }}>{sessionSummary.title}</span>
+            </div>
+          </div>
+
+          {/* Star Review & Feedback Section */}
+          <div
+            style={{
+              width: '100%',
+              maxWidth: '680px',
+              padding: '1.5rem',
+              borderRadius: '20px',
+              background: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              textAlign: 'left',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1rem'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <div>
+                <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#0f172a' }}>
+                  {reviewSubmitted ? '✓ Thank You for Your Review!' : `Leave Feedback for ${isLearnerRole ? sessionSummary.teacher_name : sessionSummary.learner_name}`}
+                </h4>
+                <p style={{ margin: '0.2rem 0 0 0', fontSize: '0.825rem', color: '#64748b' }}>
+                  {reviewSubmitted
+                    ? 'Your rating and feedback have been permanently recorded on their profile.'
+                    : 'Ratings build trust and reputation in the TimeCredit peer-to-peer ecosystem.'
+                  }
+                </p>
+              </div>
+
+              {!reviewSubmitted && (
+                <div style={{ display: 'flex', gap: '0.35rem' }}>
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setReviewRating(star)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        padding: '2px',
+                        color: star <= reviewRating ? '#f59e0b' : '#cbd5e1',
+                        transition: 'transform 0.15s ease'
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.2)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+                    >
+                      <Star size={24} fill={star <= reviewRating ? '#f59e0b' : 'none'} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {!reviewSubmitted && (
+              <>
+                <textarea
+                  value={reviewComment}
+                  onChange={(e) => setReviewComment(e.target.value)}
+                  placeholder={`Write a few words about your session with ${isLearnerRole ? sessionSummary.teacher_name : sessionSummary.learner_name}...`}
+                  rows={2}
+                  style={{
+                    width: '100%',
+                    padding: '0.75rem 1rem',
+                    borderRadius: '12px',
+                    border: '1px solid #cbd5e1',
+                    fontSize: '0.875rem',
+                    resize: 'none',
+                    fontFamily: 'inherit',
+                    outline: 'none'
+                  }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <ClayButton
+                    variant="primary"
+                    size="sm"
+                    onClick={handleSubmitReview}
+                    disabled={reviewSubmitting}
+                    icon={<Sparkles size={14} />}
+                  >
+                    {reviewSubmitting ? 'Saving Review...' : 'Submit Review & Rating'}
+                  </ClayButton>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Navigation and Next Actions */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.85rem', justifyContent: 'center', marginTop: '0.5rem' }}>
+            <ClayButton variant="primary" onClick={() => onNavigate('wallet')} icon={<Coins size={16} />}>
+              View Wallet & Ledger
+            </ClayButton>
+            <ClayButton variant="secondary" onClick={() => { setSessionSummary(null); }} icon={<Video size={16} />}>
+              Return to Empty Classroom
+            </ClayButton>
+            <ClayButton variant="secondary" onClick={() => onNavigate('browse')} icon={<Search size={16} />}>
+              Browse Live Classes
+            </ClayButton>
+            <ClayButton variant="secondary" onClick={() => onNavigate('dashboard')}>
+              Return to Dashboard
+            </ClayButton>
+          </div>
+        </ClayCard>
+      </div>
+    );
+  }
+
   // 2. EMPTY STATE: No active class in progress
   if (!activeSession) {
     return (
@@ -1422,30 +1730,6 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
   }
 
   // 4. LIVE IN-PROGRESS CLASSROOM WORKSPACE
-  const isHost = Boolean(activeSession && (
-    activeSession.teacher_id === currentUser.id ||
-    activeSession.teacher_name === currentUser.full_name
-  ));
-
-  const isLearner = Boolean(activeSession && (
-    activeSession.learner_id === currentUser.id ||
-    activeSession.learner_name === currentUser.full_name ||
-    (!isHost && activeSession.teacher_id !== currentUser.id)
-  ));
-
-  const isSoloSession = Boolean(activeSession && (
-    !activeSession.learner_id ||
-    activeSession.teacher_id === activeSession.learner_id ||
-    activeSession.learner_name?.toLowerCase().includes('waiting')
-  ));
-
-  const remoteUserName = isHost
-    ? (activeSession?.learner_name || 'Student / Peer')
-    : (activeSession?.teacher_name || 'Teaching Staff');
-
-  const remoteUserInitial = remoteUserName.charAt(0).toUpperCase();
-  const remoteRoleLabel = isHost ? 'Student' : 'Teaching Staff';
-
   const getCanonicalMeetUrl = (rawLink?: string | null) => {
     if (!rawLink) return 'https://meet.google.com/new';
     const trimmed = rawLink.trim();
@@ -1642,15 +1926,15 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <ClayBadge variant="lavender">Mentoring Student</ClayBadge>
               <ClayButton
-                variant="secondary"
+                variant="danger"
                 onClick={() => {
-                  if (confirm('Leave classroom? The active session will conclude when the student ends it, and settled TimeCredits will transfer to your wallet.')) {
-                    handleExitClassroom('dashboard');
-                  }
+                  setSettledResult(null);
+                  setSettleError(null);
+                  setSettleModalOpen(true);
                 }}
                 icon={<PhoneOff size={15} />}
               >
-                Leave Classroom
+                End Session & Settle
               </ClayButton>
             </div>
           )}
@@ -2050,25 +2334,26 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               ) : (
                 <button
                   onClick={() => {
-                    if (confirm('Leave classroom? The active session will conclude when the student ends it, and settled TimeCredits will transfer to your wallet.')) {
-                      handleExitClassroom('dashboard');
-                    }
+                    setSettledResult(null);
+                    setSettleError(null);
+                    setSettleModalOpen(true);
                   }}
                   className="clay-button"
                   style={{
                     display: 'flex',
                     alignItems: 'center',
                     gap: '0.45rem',
-                    padding: '0.55rem 1.15rem',
+                    padding: '0.55rem 1.25rem',
                     borderRadius: '16px',
-                    background: '#f1f5f9',
-                    color: '#475569',
+                    background: '#fee2e2',
+                    color: '#dc2626',
                     fontWeight: 700,
                     fontSize: '0.875rem'
                   }}
+                  title="End Session & Settle"
                 >
                   <PhoneOff size={18} />
-                  <span>Leave Classroom</span>
+                  <span>End Session & Settle</span>
                 </button>
               )}
 
@@ -2410,15 +2695,20 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               </div>
 
               <p style={{ color: '#475569', fontSize: '0.875rem', lineHeight: 1.5, margin: 0 }}>
-                💡 <strong>Instructor Note:</strong> The student will click <strong>End Session</strong> when they are finished to conclude the call and trigger the automated credit settlement into your wallet. You can safely return to the dashboard at any time.
+                💡 <strong>Instructor Note:</strong> Ending this session will finalize the call, complete the class, and automatically transfer the accumulated TimeCredits into your wallet.
               </p>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
                 <ClayButton variant="secondary" onClick={() => setSettleModalOpen(false)}>
                   Stay in Class
                 </ClayButton>
-                <ClayButton variant="primary" onClick={() => handleExitClassroom('dashboard')}>
-                  Exit to Dashboard
+                <ClayButton
+                  variant="danger"
+                  onClick={handleEndAndSettle}
+                  disabled={settling}
+                  icon={<PhoneOff size={16} />}
+                >
+                  {settling ? 'Settling Credits...' : 'Confirm & End Session Now'}
                 </ClayButton>
               </div>
             </div>
@@ -2471,15 +2761,15 @@ export const LiveClassroomPage: React.FC<LiveClassroomPageProps> = ({ currentUse
               <div style={{ padding: '1rem', borderRadius: '16px', background: '#f8fafc', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.875rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: '#64748b' }}>Verified Elapsed Duration:</span>
-                  <strong>{elapsedMinutes} minutes</strong>
+                  <strong>{elapsedMinutes > 0 ? `${elapsedMinutes}m ${elapsedSecsRemainder}s` : `${elapsedSeconds}s`}</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ color: '#64748b' }}>Session Credit Rate:</span>
                   <strong>{Number(creditRate || 0).toFixed(2)} TC / hr</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #cbd5e1', paddingTop: '0.5rem', fontSize: '1rem' }}>
-                  <span style={{ fontWeight: 700 }}>Settlement Amount:</span>
-                  <strong style={{ color: '#059669' }}>+{Number(accruedCredits || 0).toFixed(2)} TC</strong>
+                  <span style={{ fontWeight: 700 }}>Deduction from Your Balance:</span>
+                  <strong style={{ color: '#dc2626' }}>-{Number(accruedCredits || 0).toFixed(2)} TC</strong>
                 </div>
               </div>
 

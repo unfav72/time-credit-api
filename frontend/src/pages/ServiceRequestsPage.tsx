@@ -38,6 +38,7 @@ export const ServiceRequestsPage: React.FC<ServiceRequestsPageProps> = ({ curren
     try {
       const res = await api.acceptRequest(id);
       if (res?.session_id) {
+        sessionStorage.removeItem(`tc_ended_session_${res.session_id}`);
         sessionStorage.setItem('active_classroom_session_id', String(res.session_id));
       }
       await loadRequests();
@@ -185,6 +186,7 @@ export const ServiceRequestsPage: React.FC<ServiceRequestsPageProps> = ({ curren
                       variant="primary"
                       onClick={() => {
                         if (req.session_id) {
+                          sessionStorage.removeItem(`tc_ended_session_${req.session_id}`);
                           sessionStorage.setItem('active_classroom_session_id', String(req.session_id));
                         }
                         onNavigate('classroom');

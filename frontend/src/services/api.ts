@@ -325,16 +325,17 @@ class ApiClient {
     return { roomId: res.room_id, isTeacher: res.is_teacher, session: res.session };
   }
 
-  async completeSession(sessionId: number, durationMinutes: number): Promise<{ transferredCredits: number }> {
+  async completeSession(sessionId: number, durationMinutes: number, durationSeconds?: number): Promise<{ transferredCredits: number }> {
     const idempotencyKey = `SETTLE_${sessionId}_${Date.now()}`;
     const res = await this.request<{ credits_transferred: number }>(`/api/v1/sessions/${sessionId}/complete`, {
       method: 'POST',
       body: JSON.stringify({
         duration_minutes: durationMinutes,
+        duration_seconds: durationSeconds ?? (durationMinutes * 60),
         idempotency_key: idempotencyKey
       })
     });
-    return { transferredCredits: res.credits_transferred };
+    return { transferredCredits: Number(res.credits_transferred || 0) };
   }
 
   async autoSettleSession(sessionId: number, elapsedSeconds: number): Promise<{
