@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Coins, 
-  Menu, 
-  Wifi, 
-  WifiOff, 
-  Download, 
-  UserCheck, 
-  LogOut, 
+import {
+  Coins,
+  Menu,
+  Wifi,
+  WifiOff,
+  Download,
+  UserCheck,
+  LogOut,
   Sparkles,
   Home,
   CreditCard,
@@ -546,7 +546,7 @@ export const ClayNavbar: React.FC<ClayNavbarProps> = ({
               size="sm"
               variant="mint"
               onClick={() => onNavigate('register')}
-              icon={<Sparkles size={14} />}
+
             >
               Get Started
             </ClayButton>
